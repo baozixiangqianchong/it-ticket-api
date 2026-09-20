@@ -10,10 +10,10 @@
 
 ## 1. 仓库与目录
 
-独立新项目，模块名 `it-ticket-api`，不要改 `gin-demo`。
+Go 模块名 `it-ticket-api`。后台代码在仓库的 `it-ticket-serve/` 目录。
 
 ```text
-it-ticket-api/
+it-ticket-serve/
   cmd/server/main.go          # 进程入口：读配置、连库、挂路由、听端口
   internal/
     config/                   # 端口、DSN、JWT secret、bootstrap admin

@@ -1,5 +1,18 @@
 .idea/
+.vscode/
 .DS_Store
 .env
+.env.*
 *.exe
 /bin/
+
+# 前端依赖和构建产物不要进仓库
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

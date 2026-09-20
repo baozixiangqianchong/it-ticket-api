@@ -1,4 +1,4 @@
-# it-ticket-api 文档
+# 后台文档
 
 按主题拆开，不要把库表、接口、角色混在一份长文里。建议按下面顺序读。
 
@@ -17,4 +17,4 @@ Cursor 里的 Ticket Roles 画布只是编辑器预览，文件在本机 `canvas
 - **4 张表**：`users`、`tickets`、`ticket_comments`、`audit_logs`
 - **11 个接口**：3 个公开 + 7 个登录后 + 1 个管理员
 
-本项目是独立仓库，不改造 `gin-demo`。
+后台与前端同在一个仓库：接口在 `it-ticket-serve/`，管理端在 `it-ticket-web/`。
