@@ -12,8 +12,8 @@ import (
 	"it-ticket-api/internal/service"
 )
 
-// AuthHandler 处理注册、登录的 HTTP 请求。
-// 这里只负责：读 JSON、调 service、写响应。不校验密码规则、不拼 SQL。
+// AuthHandler 处理注册、登录、当前用户的 HTTP 请求。
+// 这里只负责：读参数、调 service、写响应。不校验密码规则、不拼 SQL、不解析 JWT。
 type AuthHandler struct {
 	auth *service.AuthService
 }
@@ -53,6 +53,18 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 	response.OK(c, out)
+}
+
+// Me GET /api/v1/me
+// 路由已挂 JWT 中间件，能走到这里说明头里有合法 token。
+// 把 Authorization 原样交给 service：再验一次、按 uid 查库、去掉密码。
+func (h *AuthHandler) Me(c *gin.Context) {
+	u, err := h.auth.Me(c.GetHeader("Authorization"))
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	response.OK(c, u)
 }
 
 // writeAPIError 把 service 的错误翻成 HTTP。

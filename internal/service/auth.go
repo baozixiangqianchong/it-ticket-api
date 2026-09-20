@@ -1,8 +1,8 @@
 package service
 
 import (
+	"database/sql"
 	"errors"
-	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -11,18 +11,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"it-ticket-api/internal/model"
-	"it-ticket-api/internal/response"
 	"it-ticket-api/internal/store"
 )
-
-// Error 业务错误。handler 读 Status/Code 写 HTTP 响应，不把 SQL 细节返回给客户端。
-type Error struct {
-	Status  int    // HTTP 状态码，如 400、401、409
-	Code    int    // 响应里的数字业务码，和 HTTP 对齐
-	Message string // 给前端看的中文说明
-}
-
-func (e *Error) Error() string { return e.Message }
 
 // AuthService 注册、登录。密码哈希和签发 JWT 都在这里，不进 handler、不进 store。
 type AuthService struct {
@@ -49,11 +39,7 @@ func (s *AuthService) Register(in model.RegisterInput) (*model.PublicUser, error
 	u, err := s.users.Create(email, string(hash), displayName, "user")
 	if err != nil {
 		if errors.Is(err, store.ErrEmailTaken) {
-			return nil, &Error{
-				Status:  http.StatusConflict,
-				Code:    response.CodeConflict,
-				Message: "该邮箱已被注册",
-			}
+			return nil, emailTaken()
 		}
 		return nil, err
 	}
@@ -80,6 +66,81 @@ func (s *AuthService) Login(in model.LoginInput) (*model.LoginResult, error) {
 		return nil, err
 	}
 	return &model.LoginResult{Token: token, User: u.Public()}, nil
+}
+
+// Me 用登录签发的 JWT 换当前用户公开资料。token 无效、过期或用户已不存在都统一 401。
+func (s *AuthService) Me(token string) (*model.PublicUser, error) {
+	// 中间件已经验过，这里再剥一次 Bearer，方便 handler 把头原样传进来。
+	token = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(token), "Bearer "))
+	if token == "" {
+		return nil, tokenInvalid()
+	}
+	claims, err := s.verifyToken(token)
+	if err != nil {
+		return nil, err
+	}
+	uid, ok := uidFromClaims(claims)
+	if !ok {
+		return nil, tokenInvalid()
+	}
+	// 以库为准：token 里没有 display_name，改名、改角色后也能看到新值。
+	u, err := s.users.FindByID(uid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, tokenInvalid() // token 还有效，但人已经不在了
+		}
+		return nil, err
+	}
+	pub := u.Public()
+	return &pub, nil
+}
+
+// verifyToken 验签并检查过期。密钥必须和 signToken 用的同一把 JWT_SECRET。
+// 成功返回 claims（里面有 uid / email / role）；失败统一 401，不区分「过期」还是「伪造」。
+func (s *AuthService) verifyToken(token string) (jwt.MapClaims, error) {
+	// Parse 做三件事：拆开 JWT 三段、用下面这个函数拿到密钥、用密钥验 HMAC。
+	// 第二个参数是「钥匙从哪来」：库验签时会调用它，我们把登录时用的 jwtSecret 交出去。
+	t, err := jwt.Parse(token, func(t *jwt.Token) (any, error) {
+		// 只接受 HS256。有人改成 none 或不对称算法，这里直接拒绝，避免被换算法绕过验签。
+		if t.Method != jwt.SigningMethodHS256 {
+			return nil, errors.New("unexpected signing method")
+		}
+		return s.jwtSecret, nil
+	})
+	// 签名不对、过期（claims 里的 exp）、格式坏了，都会走进这里。
+	if err != nil || t == nil || !t.Valid {
+		return nil, tokenInvalid()
+	}
+	// t.Claims 的静态类型是接口 jwt.Claims，里面实际是 Parse 解出来的 payload。
+	// 断言成 MapClaims（本质是 map[string]any）之后，才能用 claims["uid"] 取值。
+	// 和 signToken 写入的是同一份字段，例如：
+	//   uid=2, email=alice@example.com, role=user, exp=过期时间, iat=签发时间
+	// ok=false：payload 不是 map（极少见），当 token 无效处理。
+	claims, ok := t.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, tokenInvalid()
+	}
+	return claims, nil
+}
+
+// uidFromClaims 取出签发时写入的 uid。JSON 数字解析后是 float64，不能直接断言成 int64。
+func uidFromClaims(claims jwt.MapClaims) (int64, bool) {
+	raw, ok := claims["uid"]
+	if !ok {
+		return 0, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		id := int64(v)
+		if float64(id) != v || id <= 0 {
+			return 0, false
+		}
+		return id, true
+	case int64:
+		return v, v > 0
+	default:
+		return 0, false
+	}
 }
 
 // signToken 签发 JWT。后续请求头带 Authorization: Bearer <token>，中间件用同一密钥验签。
@@ -123,12 +184,4 @@ func validEmail(s string) bool {
 		return false
 	}
 	return strings.Contains(s[at+1:], ".")
-}
-
-func invalidArg(msg string) *Error {
-	return &Error{Status: http.StatusBadRequest, Code: response.CodeInvalidArg, Message: msg}
-}
-
-func unauthenticated() *Error {
-	return &Error{Status: http.StatusUnauthorized, Code: response.CodeUnauthenticated, Message: "邮箱或密码错误"}
 }

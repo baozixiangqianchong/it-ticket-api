@@ -17,6 +17,7 @@ func NewUserStore(db *sql.DB) *UserStore {
 	return &UserStore{db: db}
 }
 
+// Create 创建用户
 func (s *UserStore) Create(email, passwordHash, displayName, role string) (*model.User, error) {
 	res, err := s.db.Exec(
 		`INSERT INTO users (email, password_hash, display_name, role) VALUES (?, ?, ?, ?)`,
@@ -36,6 +37,7 @@ func (s *UserStore) Create(email, passwordHash, displayName, role string) (*mode
 	return s.FindByID(id)
 }
 
+// FindByID 根据用户 ID 查询用户信息
 func (s *UserStore) FindByID(id int64) (*model.User, error) {
 	return scanUser(s.db.QueryRow(
 		`SELECT id, email, password_hash, display_name, role, created_at, updated_at FROM users WHERE id = ?`,
@@ -43,6 +45,7 @@ func (s *UserStore) FindByID(id int64) (*model.User, error) {
 	))
 }
 
+// FindByEmail 根据用户邮箱查询用户信息
 func (s *UserStore) FindByEmail(email string) (*model.User, error) {
 	u, err := scanUser(s.db.QueryRow(
 		`SELECT id, email, password_hash, display_name, role, created_at, updated_at FROM users WHERE email = ?`,
@@ -54,6 +57,7 @@ func (s *UserStore) FindByEmail(email string) (*model.User, error) {
 	return u, err
 }
 
+// scanUser 将数据库查询结果扫描到 model.User 结构体中
 func scanUser(row *sql.Row) (*model.User, error) {
 	var u model.User
 	if err := row.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.CreatedAt, &u.UpdatedAt); err != nil {
