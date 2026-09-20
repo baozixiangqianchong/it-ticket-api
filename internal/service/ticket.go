@@ -112,6 +112,10 @@ func (s *TicketService) GetDetail(userID, id int64, role string) (*model.TicketD
 	}
 	pubs := make([]model.PublicComment, 0, len(comments))
 	for _, c := range comments {
+		// ListByTicketID 已经按 ticket_id 查了。这里再挡一层：
+		if c.TicketID != id {
+			continue
+		}
 		pubs = append(pubs, c.Public())
 	}
 	return &model.TicketDetail{PublicTicket: t.Public(), Comments: pubs}, nil
