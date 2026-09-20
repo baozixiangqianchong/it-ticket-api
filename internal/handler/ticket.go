@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 
@@ -90,11 +89,109 @@ func (h *TicketHandler) GetDetail(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, response.CodeInvalidArg, "工单 id 不合法")
 		return
 	}
-	fmt.Println("PCS uid", uid, "role", role, "id", id)
 	ticket, err := h.tickets.GetDetail(uid, id, role)
 	if err != nil {
 		writeAPIError(c, err)
 		return
 	}
 	response.OK(c, ticket)
+}
+
+// Assign POST /api/v1/tickets/:id/assign
+// 路径上的 id 是工单；JSON 的 assignee_id 是受理人（IT）。
+// 管理员 uid 只当操作人写审计，不会写进 assignee_id。
+func (h *TicketHandler) Assign(c *gin.Context) {
+	actorID, ok := middleware.UID(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+	role, ok := middleware.Role(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+	// 获取路径上的 id，工单id
+	ticketID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || ticketID <= 0 {
+		response.Fail(c, http.StatusBadRequest, response.CodeInvalidArg, "工单 id 不合法")
+		return
+	}
+	// 获取请求体中的 assignee_id，受理人id
+	var req model.AssignTicketInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, http.StatusBadRequest, response.CodeInvalidArg, "JSON 格式错误")
+		return
+	}
+	t, err := h.tickets.Assign(actorID, ticketID, role, req.AssigneeID)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	response.OK(c, t)
+}
+
+// Update POST /api/v1/tickets/:id/update
+// 用 action 改状态，不接收客户端直接写的 status。
+func (h *TicketHandler) Update(c *gin.Context) {
+	// 获取当前用户id
+	actorID, ok := middleware.UID(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+	role, ok := middleware.Role(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+	// 获取路径上的 id，工单id
+	ticketID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || ticketID <= 0 {
+		response.Fail(c, http.StatusBadRequest, response.CodeInvalidArg, "工单 id 不合法")
+		return
+	}
+	// 获取请求体中的 action，动作
+	var req model.TicketActionInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, http.StatusBadRequest, response.CodeInvalidArg, "JSON 格式错误")
+		return
+	}
+	t, err := h.tickets.Update(actorID, ticketID, role, req.Action)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	response.OK(c, t)
+}
+
+// Comment POST /api/v1/tickets/:id/comments
+// 路径上的 id 是工单；JSON 的 body 是留言。作者是当前登录用户。
+func (h *TicketHandler) Comment(c *gin.Context) {
+	actorID, ok := middleware.UID(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+	role, ok := middleware.Role(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+	ticketID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || ticketID <= 0 {
+		response.Fail(c, http.StatusBadRequest, response.CodeInvalidArg, "工单 id 不合法")
+		return
+	}
+	var req model.CreateCommentInput
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, http.StatusBadRequest, response.CodeInvalidArg, "JSON 格式错误")
+		return
+	}
+	out, err := h.tickets.Comment(actorID, ticketID, role, req.Body)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	response.OK(c, out)
 }

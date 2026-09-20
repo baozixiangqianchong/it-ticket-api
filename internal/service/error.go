@@ -35,3 +35,11 @@ func emailTaken() *Error {
 func notFound(msg string) *Error {
 	return &Error{Status: http.StatusNotFound, Code: response.CodeNotFound, Message: msg}
 }
+
+func permissionDenied(msg string) *Error {
+	return &Error{Status: http.StatusForbidden, Code: response.CodeForbidden, Message: msg}
+}
+
+func conflict(msg string) *Error {
+	return &Error{Status: http.StatusConflict, Code: response.CodeConflict, Message: msg}
+}

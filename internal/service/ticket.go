@@ -12,12 +12,14 @@ import (
 
 // TicketService 工单业务。状态机、权限、工单与审计同一事务都放这里，不拼 SQL。
 type TicketService struct {
-	tickets *store.TicketStore // 写/读 tickets 表
-	audits  *store.AuditStore  // 写 audit_logs 表
+	tickets  *store.TicketStore  // 写/读 tickets 表
+	audits   *store.AuditStore   // 写 audit_logs 表
+	users    *store.UserStore    // 指派时校验目标是不是 agent
+	comments *store.CommentStore // 写 ticket_comments 表
 }
 
-func NewTicketService(tickets *store.TicketStore, audits *store.AuditStore) *TicketService {
-	return &TicketService{tickets: tickets, audits: audits}
+func NewTicketService(tickets *store.TicketStore, audits *store.AuditStore, users *store.UserStore, comments *store.CommentStore) *TicketService {
+	return &TicketService{tickets: tickets, audits: audits, users: users, comments: comments}
 }
 
 // Create 员工（以及 agent / admin 以员工身份）提单。
@@ -105,5 +107,199 @@ func (s *TicketService) GetDetail(userID, id int64, role string) (*model.PublicT
 		return nil, err
 	}
 	pub := t.Public()
+	return &pub, nil
+}
+
+// Assign 仅 admin 把工单派给某位 agent。员工和 IT 都不能指派。
+// actorID 是当前管理员，只写进审计；assigneeID 才写入 tickets.assignee_id。
+func (s *TicketService) Assign(actorID, ticketID int64, role string, assigneeID int64) (*model.PublicTicket, error) {
+	// 已登录但角色不够：403。员工、IT 走这里，不要用 401。
+	if role != "admin" {
+		return nil, permissionDenied("没有权限指派工单")
+	}
+	// 没传或传了 0：JSON 里缺 assignee_id，还没查库。
+	if assigneeID <= 0 {
+		return nil, invalidArg("必须指定受理人")
+	}
+
+	// 目标必须是库里存在的 agent，不能派给员工或另一个管理员。
+	agent, err := s.users.FindByID(assigneeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, invalidArg("受理人必须是 IT 处理人")
+		}
+		return nil, err
+	}
+	if agent.Role != "agent" {
+		return nil, invalidArg("受理人必须是 IT 处理人")
+	}
+
+	t, err := s.tickets.FindByID(ticketID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, notFound("工单不存在")
+		}
+		return nil, err
+	}
+	// 待派、已派、处理中可以指派或改派；已解决 / 已关闭不行。
+	switch t.Status {
+	case model.StatusOpen, model.StatusAssigned, model.StatusInProgress:
+	default:
+		return nil, conflict("当前状态不能指派")
+	}
+
+	tx, err := s.tickets.Begin()
+	if err != nil {
+		return nil, err
+	}
+	// 改工单和写审计必须一起成功；中途失败 Rollback 会两行都撤掉。
+	defer tx.Rollback()
+
+	if err := s.tickets.UpdateAssignee(tx, ticketID, assigneeID); err != nil {
+		return nil, err
+	}
+	// from 用改之前的状态；actorID 记「谁派的」，不要写成受理人。
+	from := t.Status
+	if err := s.audits.Insert(tx, ticketID, actorID, model.AuditAssign, &from, model.StatusAssigned); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	// 提交后再读一遍，返回带上新处理人和 assigned。
+	updated, err := s.tickets.FindByID(ticketID)
+	if err != nil {
+		return nil, err
+	}
+	pub := updated.Public()
+	return &pub, nil
+}
+
+// Update 按动作推进状态。三种角色都能改，但不是每个人都能做每一个动作。
+// 客户端传 action，不传 status，避免绕过状态机。
+func (s *TicketService) Update(actorID, ticketID int64, role, action string) (*model.PublicTicket, error) {
+	action = strings.TrimSpace(action)
+	if action == "" {
+		return nil, invalidArg("必须指定动作：start / resolve / close / reopen")
+	}
+
+	// 看不见这张单和没有这张单一样，404。
+	t, err := s.tickets.GetDetailByViewer(actorID, ticketID, role)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, notFound("工单不存在")
+		}
+		return nil, err
+	}
+
+	// 判断这一步能不能走、走到哪。非法跳转 409，人不对 403。
+	to, clearAssignee, err := resolveTicketAction(t, actorID, role, action)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.tickets.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// 更新工单状态
+	if err := s.tickets.UpdateStatus(tx, ticketID, to, clearAssignee); err != nil {
+		return nil, err
+	}
+	from := t.Status
+	// 写审计
+	// from_status 用改之前的状态；actorID 记「谁做的」，不要写成处理人。
+	if err := s.audits.Insert(tx, ticketID, actorID, action, &from, to); err != nil {
+		return nil, err
+	}
+	// 提交事务
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+
+	// 提交后再读一遍，返回带上新状态和处理人
+	updated, err := s.tickets.FindByID(ticketID)
+	if err != nil {
+		return nil, err
+	}
+	pub := updated.Public()
+	return &pub, nil
+}
+
+// resolveTicketAction 判断这一步能不能走、走到哪。非法跳转 409，人不对 403。
+func resolveTicketAction(t *model.Ticket, actorID int64, role, action string) (to string, clearAssignee bool, err error) {
+	isAdmin := role == "admin"
+	isAssignee := t.AssigneeID != nil && *t.AssigneeID == actorID
+	isCreator := t.CreatorID == actorID
+
+	switch action {
+	case model.ActionStart:
+		// assigned → in_progress：当前处理人或管理员。
+		if t.Status != model.StatusAssigned {
+			return "", false, conflict("当前状态不能开始处理")
+		}
+		if !isAdmin && !isAssignee {
+			return "", false, permissionDenied("只有当前处理人或管理员可以开始处理")
+		}
+		return model.StatusInProgress, false, nil
+	case model.ActionResolve:
+		// in_progress → resolved：当前处理人或管理员。
+		if t.Status != model.StatusInProgress {
+			return "", false, conflict("当前状态不能标记已解决")
+		}
+		if !isAdmin && !isAssignee {
+			return "", false, permissionDenied("只有当前处理人或管理员可以标记已解决")
+		}
+		return model.StatusResolved, false, nil
+	case model.ActionClose:
+		// resolved → closed：提单人或管理员。
+		if t.Status != model.StatusResolved {
+			return "", false, conflict("当前状态不能关闭")
+		}
+		if !isAdmin && !isCreator {
+			return "", false, permissionDenied("只有提单人或管理员可以关闭工单")
+		}
+		return model.StatusClosed, false, nil
+	case model.ActionReopen:
+		// resolved → open，并清空处理人：提单人或管理员。
+		if t.Status != model.StatusResolved {
+			return "", false, conflict("当前状态不能重开")
+		}
+		if !isAdmin && !isCreator {
+			return "", false, permissionDenied("只有提单人或管理员可以重开工单")
+		}
+		return model.StatusOpen, true, nil
+	default:
+		return "", false, invalidArg("动作必须是 start / resolve / close / reopen")
+	}
+}
+
+// Comment 对可见工单留言。closed 不能评；看不见当 404。评论本身不写审计。
+func (s *TicketService) Comment(actorID, ticketID int64, role, body string) (*model.PublicComment, error) {
+	body = strings.TrimSpace(body)
+	n := utf8.RuneCountInString(body)
+	if n == 0 || n > 2000 {
+		return nil, invalidArg("评论必填，最多 2000 个字")
+	}
+
+	t, err := s.tickets.GetDetailByViewer(actorID, ticketID, role)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, notFound("工单不存在")
+		}
+		return nil, err
+	}
+	if t.Status == model.StatusClosed {
+		return nil, conflict("工单已关闭，不能再评论")
+	}
+
+	c, err := s.comments.Insert(ticketID, actorID, body)
+	if err != nil {
+		return nil, err
+	}
+	pub := c.Public()
 	return &pub, nil
 }

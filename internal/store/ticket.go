@@ -133,3 +133,22 @@ func (s *TicketStore) GetDetailByViewer(userID, id int64, role string) (*model.T
 	}
 	return scanTicket(s.db.QueryRow(query, args...))
 }
+
+// UpdateAssignee 把处理人改成指定的 agent，状态写成 assigned。必须走同一条事务。
+func (s *TicketStore) UpdateAssignee(tx *sql.Tx, ticketID, assigneeID int64) error {
+	_, err := tx.Exec(
+		`UPDATE tickets SET assignee_id = ?, status = ? WHERE id = ?`,
+		assigneeID, model.StatusAssigned, ticketID,
+	)
+	return err
+}
+
+// UpdateStatus 按状态机写下一步。clearAssignee 为 true 时清空处理人（重开）。
+func (s *TicketStore) UpdateStatus(tx *sql.Tx, ticketID int64, status string, clearAssignee bool) error {
+	if clearAssignee {
+		_, err := tx.Exec(`UPDATE tickets SET status = ?, assignee_id = NULL WHERE id = ?`, status, ticketID)
+		return err
+	}
+	_, err := tx.Exec(`UPDATE tickets SET status = ? WHERE id = ?`, status, ticketID)
+	return err
+}

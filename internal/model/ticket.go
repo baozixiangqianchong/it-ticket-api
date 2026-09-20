@@ -8,9 +8,23 @@ const (
 	CategoryNetwork  = "network"
 	CategoryOther    = "other"
 
-	StatusOpen = "open"
+	StatusOpen       = "open"
+	StatusAssigned   = "assigned"
+	StatusInProgress = "in_progress"
+	StatusResolved   = "resolved"
+	StatusClosed     = "closed"
 
-	AuditCreate = "create"
+	AuditCreate  = "create"
+	AuditAssign  = "assign"
+	AuditStart   = "start"
+	AuditResolve = "resolve"
+	AuditClose   = "close"
+	AuditReopen  = "reopen"
+
+	ActionStart   = "start"
+	ActionResolve = "resolve"
+	ActionClose   = "close"
+	ActionReopen  = "reopen"
 )
 
 // Ticket 对应 tickets 表一行。
@@ -58,4 +72,14 @@ type CreateTicketInput struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Category    string `json:"category"`
+}
+
+// AssignTicketInput 指派入参。处理人是要派给谁，不是当前管理员。
+type AssignTicketInput struct {
+	AssigneeID int64 `json:"assignee_id"`
+}
+
+// TicketActionInput 改状态只传动作，不让客户端直接写 status。
+type TicketActionInput struct {
+	Action string `json:"action"`
 }

@@ -67,3 +67,43 @@ func scanUser(row *sql.Row) (*model.User, error) {
 }
 
 var ErrEmailTaken = errors.New("email taken")
+
+// List 分页查用户，按 id 升序，方便管理员对照。
+func (s *UserStore) List(offset, limit int) ([]model.User, error) {
+	rows, err := s.db.Query(
+		`SELECT id, email, password_hash, display_name, role, created_at, updated_at
+		 FROM users ORDER BY id ASC LIMIT ? OFFSET ?`,
+		limit, offset,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := make([]model.User, 0)
+	for rows.Next() {
+		var u model.User
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName, &u.Role, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+func (s *UserStore) Count() (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
+	return n, err
+}
+
+func (s *UserStore) CountByRole(role string) (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE role = ?`, role).Scan(&n)
+	return n, err
+}
+
+func (s *UserStore) UpdateRole(id int64, role string) error {
+	_, err := s.db.Exec(`UPDATE users SET role = ? WHERE id = ?`, role, id)
+	return err
+}
