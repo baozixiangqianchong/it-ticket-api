@@ -98,7 +98,7 @@ func (s *TicketService) List(userID int64, role string) ([]model.PublicTicket, e
 }
 
 // GetDetail 工单详情：可见范围和列表相同。看不见或没有这张单，都是 404。
-func (s *TicketService) GetDetail(userID, id int64, role string) (*model.PublicTicket, error) {
+func (s *TicketService) GetDetail(userID, id int64, role string) (*model.TicketDetail, error) {
 	t, err := s.tickets.GetDetailByViewer(userID, id, role)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -106,8 +106,15 @@ func (s *TicketService) GetDetail(userID, id int64, role string) (*model.PublicT
 		}
 		return nil, err
 	}
-	pub := t.Public()
-	return &pub, nil
+	comments, err := s.comments.ListByTicketID(id)
+	if err != nil {
+		return nil, err
+	}
+	pubs := make([]model.PublicComment, 0, len(comments))
+	for _, c := range comments {
+		pubs = append(pubs, c.Public())
+	}
+	return &model.TicketDetail{PublicTicket: t.Public(), Comments: pubs}, nil
 }
 
 // Assign 仅 admin 把工单派给某位 agent。员工和 IT 都不能指派。

@@ -41,3 +41,26 @@ func (s *CommentStore) FindByID(id int64) (*model.Comment, error) {
 	}
 	return &c, nil
 }
+
+// ListByTicketID 按时间正序拉一张单的评论，给详情页用。
+func (s *CommentStore) ListByTicketID(ticketID int64) ([]model.Comment, error) {
+	rows, err := s.db.Query(
+		`SELECT id, ticket_id, author_id, body, created_at
+		 FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at ASC, id ASC`,
+		ticketID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	list := make([]model.Comment, 0)
+	for rows.Next() {
+		var c model.Comment
+		if err := rows.Scan(&c.ID, &c.TicketID, &c.AuthorID, &c.Body, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, c)
+	}
+	return list, rows.Err()
+}

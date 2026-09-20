@@ -15,7 +15,7 @@ func New(db *sql.DB, jwtSecret string) *gin.Engine {
 	r := gin.New()
 	// Recovery：handler panic 时返回 500，进程不崩。
 	// RequestID：每条请求一个 ID。AccessLog：结束后打印路径、参数、状态码。
-	r.Use(gin.Recovery(), middleware.RequestID(), middleware.AccessLog())
+	r.Use(gin.Recovery(), middleware.CORS(), middleware.RequestID(), middleware.AccessLog())
 
 	r.GET("/healthz", handler.Healthz(db))
 

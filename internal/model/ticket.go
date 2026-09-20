@@ -67,6 +67,12 @@ func (t Ticket) Public() PublicTicket {
 	}
 }
 
+// TicketDetail 详情：工单字段 + 评论。管理端打开工单时用。
+type TicketDetail struct {
+	PublicTicket
+	Comments []PublicComment `json:"comments"`
+}
+
 // CreateTicketInput 创建工单入参。客户端就算传 status / creator_id 也会被忽略。
 type CreateTicketInput struct {
 	Title       string `json:"title"`
