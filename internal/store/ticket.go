@@ -62,3 +62,74 @@ func scanTicket(row *sql.Row) (*model.Ticket, error) {
 	}
 	return &t, nil
 }
+
+// ListByViewer 按「当前这个人能看什么」查列表。role 是 users 表上的角色，不是 tickets 的列。
+// 不要写成 WHERE role = ?：工单行上没有角色字段。
+func (s *TicketStore) ListByViewer(userID int64, role string) ([]model.PublicTicket, error) {
+	// 三种角色共用同一条 SELECT，差别只在 WHERE。
+	query := `SELECT id, title, description, category, status, creator_id, assignee_id, created_at, updated_at FROM tickets`
+	var args []any
+	switch role {
+	case "admin":
+		// 管理员：不按人过滤，看全部。
+	case "agent":
+		// IT：自己提的，或派给自己的。
+		query += ` WHERE creator_id = ? OR assignee_id = ?`
+		args = []any{userID, userID}
+	default:
+		// 员工（以及未知角色按员工收）：只能看自己提的。
+		query += ` WHERE creator_id = ?`
+		args = []any{userID}
+	}
+	query += ` ORDER BY updated_at DESC`
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanTickets(rows)
+}
+
+// scanTickets 把多行扫进切片。assignee_id 可空，和单行 scanTicket 一样先接 NullInt64。
+func scanTickets(rows *sql.Rows) ([]model.PublicTicket, error) {
+	defer rows.Close()
+	tickets := make([]model.PublicTicket, 0)
+	for rows.Next() {
+		var t model.Ticket
+		var assignee sql.NullInt64
+		if err := rows.Scan(
+			&t.ID, &t.Title, &t.Description, &t.Category, &t.Status,
+			&t.CreatorID, &assignee, &t.CreatedAt, &t.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if assignee.Valid {
+			t.AssigneeID = &assignee.Int64
+		}
+		tickets = append(tickets, t.Public())
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tickets, nil
+}
+
+// GetDetailByViewer 按 id 取一张单，同时套上和列表相同的可见范围。
+// 看不见或 id 不存在都会变成 sql.ErrNoRows，service 统一翻成 404，避免泄露「单子在不在」。
+// 第一条 WHERE 已经占住了，后面只能 AND，不能再写 WHERE。
+func (s *TicketStore) GetDetailByViewer(userID, id int64, role string) (*model.Ticket, error) {
+	query := `SELECT id, title, description, category, status, creator_id, assignee_id, created_at, updated_at
+		 FROM tickets WHERE id = ?`
+	args := []any{id}
+	switch role {
+	case "admin":
+		// 管理员：只要 id 对就能看。
+	case "agent":
+		query += ` AND (creator_id = ? OR assignee_id = ?)`
+		args = append(args, userID, userID)
+	default:
+		query += ` AND creator_id = ?`
+		args = append(args, userID)
+	}
+	return scanTicket(s.db.QueryRow(query, args...))
+}

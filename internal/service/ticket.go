@@ -1,6 +1,8 @@
 package service
 
 import (
+	"database/sql"
+	"errors"
 	"strings"
 	"unicode/utf8"
 
@@ -86,4 +88,22 @@ func validTicketCategory(s string) bool {
 	default:
 		return false
 	}
+}
+
+// List 同一条列表：按角色缩小可见范围，不给三种人各开一个接口。
+func (s *TicketService) List(userID int64, role string) ([]model.PublicTicket, error) {
+	return s.tickets.ListByViewer(userID, role)
+}
+
+// GetDetail 工单详情：可见范围和列表相同。看不见或没有这张单，都是 404。
+func (s *TicketService) GetDetail(userID, id int64, role string) (*model.PublicTicket, error) {
+	t, err := s.tickets.GetDetailByViewer(userID, id, role)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, notFound("工单不存在")
+		}
+		return nil, err
+	}
+	pub := t.Public()
+	return &pub, nil
 }

@@ -10,9 +10,10 @@ import (
 	"it-ticket-api/internal/response"
 )
 
-// uidKey 是 context 里存放当前用户 id 的键。
+// uidKey 是 context 里存放当前用户 id 的键。roleKey 是角色。
 // 中间件 c.Set，handler 用 UID() 取出。字符串写死一处，避免两边拼错。
 const uidKey = "uid"
+const roleKey = "role"
 
 // JWT 返回一个 Gin 中间件：校验 Authorization: Bearer <token>。
 // secret 来自配置 JWT_SECRET，必须和登录 signToken 用的同一把，否则合法 token 也会被拒。
@@ -66,9 +67,15 @@ func JWT(secret string) gin.HandlerFunc {
 			unauthorized(c)
 			return
 		}
-		// 写入本次请求的 context。handler 用 UID(c) 取，不要再自己解析 JWT。
+		role, ok := roleFromClaims(claims)
+		if !ok {
+			unauthorized(c)
+			return
+		}
+		// 写入本次请求的 context。列表用 uid+role 决定能看哪些单，不要再解析 JWT。
 		c.Set(uidKey, uid)
-		c.Next() // 放行，进入后面的 /me、POST /tickets 等
+		c.Set(roleKey, role)
+		c.Next()
 	}
 }
 
@@ -81,6 +88,19 @@ func UID(c *gin.Context) (int64, bool) {
 	// context 存的是 any，必须断言回 int64，和 c.Set 放进去的类型一致。
 	id, ok := v.(int64)
 	return id, ok && id > 0
+}
+
+// Role 取出中间件写入的当前用户角色。没经过 JWT 或不是 user/agent/admin 则 ok=false。
+func Role(c *gin.Context) (string, bool) {
+	v, ok := c.Get(roleKey)
+	if !ok {
+		return "", false
+	}
+	role, ok := v.(string)
+	if !ok || (role != "user" && role != "agent" && role != "admin") {
+		return "", false
+	}
+	return role, true
 }
 
 func unauthorized(c *gin.Context) {
@@ -107,5 +127,22 @@ func uidFromClaims(claims jwt.MapClaims) (int64, bool) {
 		return v, v > 0
 	default:
 		return 0, false
+	}
+}
+
+func roleFromClaims(claims jwt.MapClaims) (string, bool) {
+	raw, ok := claims["role"]
+	if !ok {
+		return "", false
+	}
+	role, ok := raw.(string)
+	if !ok {
+		return "", false
+	}
+	switch role {
+	case "user", "agent", "admin":
+		return role, true
+	default:
+		return "", false
 	}
 }

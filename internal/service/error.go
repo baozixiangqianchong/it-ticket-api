@@ -31,3 +31,7 @@ func tokenInvalid() *Error {
 func emailTaken() *Error {
 	return &Error{Status: http.StatusConflict, Code: response.CodeConflict, Message: "该邮箱已被注册"}
 }
+
+func notFound(msg string) *Error {
+	return &Error{Status: http.StatusNotFound, Code: response.CodeNotFound, Message: msg}
+}

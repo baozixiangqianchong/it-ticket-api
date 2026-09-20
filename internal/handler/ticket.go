@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -45,4 +47,54 @@ func (h *TicketHandler) Create(c *gin.Context) {
 		return
 	}
 	response.OK(c, t) // data 是刚建的工单：status=open，assignee_id=null
+}
+
+// List GET /api/v1/tickets
+// 路由已挂 JWT。中间件验过 token 后把 uid 放进 context，这里取出来当创建人。
+func (h *TicketHandler) List(c *gin.Context) {
+	uid, ok := middleware.UID(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+	// 获取当前用户角色
+	role, ok := middleware.Role(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+
+	tickets, err := h.tickets.List(uid, role)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	response.OK(c, tickets)
+}
+
+// GetDetail GET /api/v1/tickets/:id
+// 和列表一样带上 uid、role；id 来自路径，必须是正整数。
+func (h *TicketHandler) GetDetail(c *gin.Context) {
+	uid, ok := middleware.UID(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+	role, ok := middleware.Role(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		response.Fail(c, http.StatusBadRequest, response.CodeInvalidArg, "工单 id 不合法")
+		return
+	}
+	fmt.Println("PCS uid", uid, "role", role, "id", id)
+	ticket, err := h.tickets.GetDetail(uid, id, role)
+	if err != nil {
+		writeAPIError(c, err)
+		return
+	}
+	response.OK(c, ticket)
 }

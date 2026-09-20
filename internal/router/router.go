@@ -32,8 +32,10 @@ func New(db *sql.DB, jwtSecret string) *gin.Engine {
 		authed := v1.Group("")
 		authed.Use(middleware.JWT(jwtSecret))
 		{
-			authed.GET("/me", auth.Me)              // GET /api/v1/me，用 token 换当前用户
-			authed.POST("/tickets", tickets.Create) // POST /api/v1/tickets，登录用户提单
+			authed.GET("/me", auth.Me)                     // GET /api/v1/me，用 token 换当前用户
+			authed.POST("/tickets/create", tickets.Create) // POST /api/v1/tickets，登录用户提单
+			authed.GET("/tickets/list", tickets.List)      // GET /api/v1/tickets，登录用户查看工单
+			authed.GET("/tickets/:id", tickets.GetDetail)  // GET /api/v1/tickets/:id，登录用户查看工单详情
 		}
 	}
 
