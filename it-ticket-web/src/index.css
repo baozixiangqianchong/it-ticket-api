@@ -9,11 +9,30 @@ html,
 body,
 #root {
   margin: 0;
-  min-height: 100%;
+  height: 100%;
+  overflow: hidden;
 }
 
-.app-layout {
-  min-height: 100vh;
+/* 整页锁在视口里：侧栏和顶栏不跟着走，只有 .app-content 滚动 */
+.app-layout.ant-layout {
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+}
+
+.app-sider.ant-layout-sider {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app-main.ant-layout {
+  height: 100vh;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.app-header.ant-layout-header {
+  flex: 0 0 64px;
 }
 
 .brand {
@@ -45,6 +64,7 @@ body,
   display: flex !important;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
   border-bottom: 1px solid #d9e2de;
 }
 
@@ -56,7 +76,10 @@ body,
   font-weight: 600;
 }
 
-.app-content {
+.app-content.ant-layout-content {
+  height: calc(100vh - 64px);
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 24px;
 }
 

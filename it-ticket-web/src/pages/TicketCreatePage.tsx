@@ -1,11 +1,12 @@
 import { ArrowLeftOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Form, Input, Select, Space, Typography } from 'antd'
+import { App, Button, Card, Form, Input, Select, Space, Typography } from 'antd'
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
-import { ApiError, api } from '../api/client'
+import { api } from '../api/client'
 import type { TicketCategory } from '../api/types'
 import { categoryLabel } from '../lib/labels'
+import { errText } from '../lib/toast'
 
 const categories: TicketCategory[] = ['hardware', 'software', 'network', 'other']
 
@@ -17,11 +18,10 @@ type CreateForm = {
 
 export function TicketCreatePage() {
   const navigate = useNavigate()
-  const [error, setError] = useState('')
+  const { message } = App.useApp()
   const [submitting, setSubmitting] = useState(false)
 
   async function onFinish(values: CreateForm) {
-    setError('')
     setSubmitting(true)
     try {
       const ticket = await api.createTicket(
@@ -31,7 +31,7 @@ export function TicketCreatePage() {
       )
       navigate(`/tickets/${ticket.id}`, { replace: true })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : '创建失败')
+      message.error(errText(err, '创建失败'))
     } finally {
       setSubmitting(false)
     }
@@ -46,10 +46,9 @@ export function TicketCreatePage() {
         <Typography.Title level={3} style={{ margin: '8px 0 4px' }}>
           新建工单
         </Typography.Title>
-        <Typography.Text type="secondary">提交后状态为待处理，等待管理员指派</Typography.Text>
+        <Typography.Text type="secondary">提交后进入待派池，管理员可指派，IT 也可以自己领取</Typography.Text>
       </div>
       <Card>
-        {error ? <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} /> : null}
         <Form
           layout="vertical"
           requiredMark={false}

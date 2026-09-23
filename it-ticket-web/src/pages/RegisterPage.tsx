@@ -1,11 +1,11 @@
 import { LockOutlined, MailOutlined, UserOutlined } from '@ant-design/icons'
-import { Alert, Button, Form, Input } from 'antd'
+import { App, Button, Form, Input } from 'antd'
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
-import { ApiError } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
 import { AuthShell } from '../layout/AuthShell'
+import { errText } from '../lib/toast'
 
 type RegisterForm = {
   displayName: string
@@ -15,18 +15,17 @@ type RegisterForm = {
 
 export function RegisterPage() {
   const { register } = useAuth()
+  const { message } = App.useApp()
   const navigate = useNavigate()
-  const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
   async function onFinish(values: RegisterForm) {
-    setError('')
     setSubmitting(true)
     try {
       await register(values.email.trim(), values.password, values.displayName.trim())
       navigate('/tickets', { replace: true })
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : '注册失败')
+      message.error(errText(err, '注册失败'))
     } finally {
       setSubmitting(false)
     }
@@ -34,7 +33,6 @@ export function RegisterPage() {
 
   return (
     <AuthShell title="创建账号" subtitle="新账号默认是员工，管理员可在后台改角色">
-      {error ? <Alert type="error" showIcon message={error} style={{ marginBottom: 16 }} /> : null}
       <Form layout="vertical" requiredMark={false} onFinish={onFinish}>
         <Form.Item
           name="displayName"

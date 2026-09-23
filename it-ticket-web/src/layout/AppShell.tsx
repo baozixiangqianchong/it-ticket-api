@@ -26,7 +26,7 @@ export function AppShell() {
 
   return (
     <Layout className="app-layout">
-      <Sider breakpoint="lg" collapsedWidth={72} width={232}>
+      <Sider className="app-sider" breakpoint="lg" collapsedWidth={72} width={232}>
         <div className="brand">
           <CustomerServiceOutlined className="brand-icon" />
           <div>
@@ -48,7 +48,7 @@ export function AppShell() {
           ]}
         />
       </Sider>
-      <Layout>
+      <Layout className="app-main">
         <Header className="app-header">
           <Typography.Text type="secondary">工单处理工作台</Typography.Text>
           <Space size={12}>

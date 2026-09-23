@@ -18,9 +18,26 @@ const (
 	CodeUnavailable     = 503 // 依赖不可用（健康检查发现 MySQL 不通）
 )
 
-// Body 所有接口共用的外层信封。code 是数字，message 给人看（中文）。
+// 失败时的 error 字符串，用来区分同为 409 的几种冲突。成功响应不带这个字段。
+const (
+	ErrOK                    = ""
+	ErrInvalidArgument       = "INVALID_ARGUMENT"
+	ErrUnauthenticated       = "UNAUTHENTICATED"
+	ErrPermissionDenied      = "PERMISSION_DENIED"
+	ErrNotFound              = "NOT_FOUND"
+	ErrEmailTaken            = "EMAIL_TAKEN"
+	ErrTicketInvalidTrans    = "TICKET_INVALID_TRANSITION"
+	ErrTicketClosed          = "TICKET_CLOSED"
+	ErrTicketAlreadyAssigned = "TICKET_ALREADY_ASSIGNED"
+	ErrLastAdmin             = "LAST_ADMIN"
+	ErrInternal              = "INTERNAL"
+	ErrUnavailable           = "UNAVAILABLE"
+)
+
+// Body 所有接口共用的外层信封。code 是数字；error 是业务名，成功时省略。
 type Body struct {
 	Code    int    `json:"code"`
+	Error   string `json:"error,omitempty"`
 	Message string `json:"message"`
 	Data    any    `json:"data"`
 }
@@ -33,5 +50,30 @@ func OK(c *gin.Context, data any) {
 }
 
 func Fail(c *gin.Context, httpStatus, code int, message string) {
-	c.JSON(httpStatus, Body{Code: code, Message: message, Data: nil})
+	FailErr(c, httpStatus, code, defaultErrName(code), message)
+}
+
+func FailErr(c *gin.Context, httpStatus, code int, errName, message string) {
+	c.JSON(httpStatus, Body{Code: code, Error: errName, Message: message, Data: nil})
+}
+
+func defaultErrName(code int) string {
+	switch code {
+	case CodeInvalidArg:
+		return ErrInvalidArgument
+	case CodeUnauthenticated:
+		return ErrUnauthenticated
+	case CodeForbidden:
+		return ErrPermissionDenied
+	case CodeNotFound:
+		return ErrNotFound
+	case CodeConflict:
+		return ErrTicketInvalidTrans
+	case CodeInternal:
+		return ErrInternal
+	case CodeUnavailable:
+		return ErrUnavailable
+	default:
+		return ""
+	}
 }

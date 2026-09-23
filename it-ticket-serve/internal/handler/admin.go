@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"it-ticket-api/internal/middleware"
 	"it-ticket-api/internal/model"
 	"it-ticket-api/internal/response"
 	"it-ticket-api/internal/service"
@@ -23,7 +24,7 @@ func NewAdminHandler(admin *service.AdminService) *AdminHandler {
 // ListUsers GET /api/v1/admin/users
 func (h *AdminHandler) ListUsers(c *gin.Context) {
 	page, pageSize := parsePage(c)
-	out, err := h.admin.ListUsers(page, pageSize)
+	out, err := h.admin.ListUsers(page, pageSize, c.Query("role"), c.Query("q"))
 	if err != nil {
 		writeAPIError(c, err)
 		return
@@ -43,7 +44,12 @@ func (h *AdminHandler) UpdateRole(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, response.CodeInvalidArg, "JSON 格式错误")
 		return
 	}
-	u, err := h.admin.UpdateRole(id, req.Role)
+	actorID, ok := middleware.UID(c)
+	if !ok {
+		response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "未认证")
+		return
+	}
+	u, err := h.admin.UpdateRole(actorID, id, req.Role)
 	if err != nil {
 		writeAPIError(c, err)
 		return

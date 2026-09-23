@@ -1,10 +1,10 @@
 import type {
-  PublicTicket,
-  PublicUser,
   Role,
   TicketAction,
   TicketCategory,
+  TicketScope,
   TicketStatus,
+  UserRef,
 } from '../api/types'
 
 export const roleLabel: Record<Role, string> = {
@@ -14,7 +14,7 @@ export const roleLabel: Record<Role, string> = {
 }
 
 export const statusLabel: Record<TicketStatus, string> = {
-  open: '待处理',
+  open: '待派单',
   assigned: '已指派',
   in_progress: '处理中',
   resolved: '已解决',
@@ -28,11 +28,32 @@ export const categoryLabel: Record<TicketCategory, string> = {
   other: '其他',
 }
 
+export const scopeLabel: Record<TicketScope, string> = {
+  all: '全部',
+  pool: '待领',
+  assigned: '待我处理',
+  created: '我提交的',
+}
+
 export const actionLabel: Record<TicketAction, string> = {
   start: '开始处理',
   resolve: '标记已解决',
   close: '关闭工单',
   reopen: '重开工单',
+  cancel: '撤回工单',
+  claim: '领取工单',
+  assign: '指派处理人',
+}
+
+export const auditLabel: Record<string, string> = {
+  create: '创建工单',
+  assign: '指派处理人',
+  claim: '领取工单',
+  start: '开始处理',
+  resolve: '标记已解决',
+  close: '关闭工单',
+  reopen: '重开工单',
+  cancel: '撤回工单',
 }
 
 export const statusColor: Record<TicketStatus, 'blue' | 'purple' | 'gold' | 'green' | 'default'> = {
@@ -62,32 +83,7 @@ export function formatTime(value: string): string {
   return d.toLocaleString('zh-CN', { hour12: false })
 }
 
-// 按钮按状态机和角色裁剪，和后台 resolveTicketAction 对齐。
-export function availableActions(
-  ticket: PublicTicket,
-  user: PublicUser,
-): TicketAction[] {
-  const isAdmin = user.role === 'admin'
-  const isAssignee = ticket.assignee_id === user.id
-  const isCreator = ticket.creator_id === user.id
-
-  if (ticket.status === 'assigned' && (isAdmin || isAssignee)) {
-    return ['start']
-  }
-  if (ticket.status === 'in_progress' && (isAdmin || isAssignee)) {
-    return ['resolve']
-  }
-  if (ticket.status === 'resolved' && (isAdmin || isCreator)) {
-    return ['close', 'reopen']
-  }
-  return []
-}
-
-export function canAssign(ticket: PublicTicket, user: PublicUser): boolean {
-  if (user.role !== 'admin') return false
-  return (
-    ticket.status === 'open' ||
-    ticket.status === 'assigned' ||
-    ticket.status === 'in_progress'
-  )
+export function personName(ref: UserRef | null | undefined, empty = '未指派'): string {
+  if (!ref) return empty
+  return ref.display_name || `用户 #${ref.id}`
 }

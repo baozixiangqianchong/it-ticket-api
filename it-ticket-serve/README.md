@@ -39,7 +39,7 @@ it-ticket-serve/
 
 ## 运行
 
-先执行 `sql/001_init.sql` 建库建表，再：
+先执行 `sql/001_init.sql` 建库建表。已经跑过一期库的，再执行 `sql/002_v2.sql` 加上 `closed_at` 和审计 `reason`。然后：
 
 ```bash
 go run ./cmd/server

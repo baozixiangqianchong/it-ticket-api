@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"strings"
 
 	"github.com/go-sql-driver/mysql"
 
@@ -68,12 +69,14 @@ func scanUser(row *sql.Row) (*model.User, error) {
 
 var ErrEmailTaken = errors.New("email taken")
 
-// List 分页查用户，按 id 升序，方便管理员对照。
-func (s *UserStore) List(offset, limit int) ([]model.User, error) {
+// List 分页查用户。role / q 为空则不筛。
+func (s *UserStore) List(offset, limit int, role, q string) ([]model.User, error) {
+	where, args := userFilter(role, q)
+	args = append(args, limit, offset)
 	rows, err := s.db.Query(
 		`SELECT id, email, password_hash, display_name, role, created_at, updated_at
-		 FROM users ORDER BY id ASC LIMIT ? OFFSET ?`,
-		limit, offset,
+		 FROM users`+where+` ORDER BY id ASC LIMIT ? OFFSET ?`,
+		args...,
 	)
 	if err != nil {
 		return nil, err
@@ -91,10 +94,29 @@ func (s *UserStore) List(offset, limit int) ([]model.User, error) {
 	return users, rows.Err()
 }
 
-func (s *UserStore) Count() (int64, error) {
+func (s *UserStore) Count(role, q string) (int64, error) {
+	where, args := userFilter(role, q)
 	var n int64
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n)
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM users`+where, args...).Scan(&n)
 	return n, err
+}
+
+func userFilter(role, q string) (string, []any) {
+	var parts []string
+	var args []any
+	if role != "" {
+		parts = append(parts, "role = ?")
+		args = append(args, role)
+	}
+	if q = strings.TrimSpace(q); q != "" {
+		like := "%" + escapeLike(q) + "%"
+		parts = append(parts, "(email LIKE ? OR display_name LIKE ?)")
+		args = append(args, like, like)
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return " WHERE " + strings.Join(parts, " AND "), args
 }
 
 func (s *UserStore) CountByRole(role string) (int64, error) {

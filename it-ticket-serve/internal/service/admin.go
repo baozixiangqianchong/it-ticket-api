@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"it-ticket-api/internal/logger"
 	"it-ticket-api/internal/model"
 	"it-ticket-api/internal/store"
 )
@@ -18,8 +19,7 @@ func NewAdminService(users *store.UserStore) *AdminService {
 	return &AdminService{users: users}
 }
 
-// ListUsers 分页用户列表。不含密码哈希。
-func (s *AdminService) ListUsers(page, pageSize int) (*model.UserPage, error) {
+func (s *AdminService) ListUsers(page, pageSize int, role, q string) (*model.UserPage, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -29,12 +29,16 @@ func (s *AdminService) ListUsers(page, pageSize int) (*model.UserPage, error) {
 	if pageSize > 50 {
 		pageSize = 50
 	}
+	role = strings.TrimSpace(role)
+	if role != "" && role != "user" && role != "agent" && role != "admin" {
+		return nil, invalidArg("角色必须是 user / agent / admin")
+	}
 
-	total, err := s.users.Count()
+	total, err := s.users.Count(role, q)
 	if err != nil {
 		return nil, err
 	}
-	list, err := s.users.List((page-1)*pageSize, pageSize)
+	list, err := s.users.List((page-1)*pageSize, pageSize, role, q)
 	if err != nil {
 		return nil, err
 	}
@@ -46,8 +50,7 @@ func (s *AdminService) ListUsers(page, pageSize int) (*model.UserPage, error) {
 	return &model.UserPage{Items: items, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
-// UpdateRole 把用户改成 user / agent / admin。不能拿掉系统里最后一个 admin。
-func (s *AdminService) UpdateRole(userID int64, role string) (*model.AdminUser, error) {
+func (s *AdminService) UpdateRole(actorID, userID int64, role string) (*model.AdminUser, error) {
 	role = strings.TrimSpace(role)
 	if role != "user" && role != "agent" && role != "admin" {
 		return nil, invalidArg("角色必须是 user / agent / admin")
@@ -61,14 +64,18 @@ func (s *AdminService) UpdateRole(userID int64, role string) (*model.AdminUser, 
 		return nil, err
 	}
 
-	// 最后一个管理员降级后，没人能派单、也没人能再改角色。
+	// 不能拿掉自己的管理员：改成功后 JWT 下一请求就进不了 /admin，页面会误报「没有权限」。
+	if actorID == userID && u.Role == "admin" && role != "admin" {
+		return nil, permissionDenied("不能取消自己的管理员身份")
+	}
+
 	if u.Role == "admin" && role != "admin" {
 		n, err := s.users.CountByRole("admin")
 		if err != nil {
 			return nil, err
 		}
 		if n <= 1 {
-			return nil, conflict("不能取消最后一个管理员")
+			return nil, lastAdmin()
 		}
 	}
 
@@ -76,6 +83,7 @@ func (s *AdminService) UpdateRole(userID int64, role string) (*model.AdminUser, 
 		if err := s.users.UpdateRole(userID, role); err != nil {
 			return nil, err
 		}
+		logger.Info("用户角色已变更", "user_id", userID, "from", u.Role, "to", role)
 		u.Role = role
 	}
 	pub := u.AdminPublic()

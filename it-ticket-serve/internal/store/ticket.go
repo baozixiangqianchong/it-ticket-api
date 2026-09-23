@@ -2,28 +2,32 @@ package store
 
 import (
 	"database/sql"
+	"strings"
 
 	"it-ticket-api/internal/model"
 )
 
+const ticketSelect = `SELECT t.id, t.title, t.description, t.category, t.status,
+	t.creator_id, t.assignee_id, t.created_at, t.updated_at, t.closed_at,
+	cu.display_name, COALESCE(au.display_name, '')
+ FROM tickets t
+ JOIN users cu ON cu.id = t.creator_id
+ LEFT JOIN users au ON au.id = t.assignee_id`
+
 // TicketStore 只谈 tickets 表的 SQL。开不开事务、状态能不能跳，由 service 决定。
 type TicketStore struct {
-	db *sql.DB // 连接池，FindByID 走它；Insert 必须走传入的 tx，才能和审计同一事务
+	db *sql.DB
 }
 
 func NewTicketStore(db *sql.DB) *TicketStore {
 	return &TicketStore{db: db}
 }
 
-// Begin 开事务。工单 INSERT 和审计 INSERT 必须一起提交，由 service 调用本方法。
 func (s *TicketStore) Begin() (*sql.Tx, error) {
 	return s.db.Begin()
 }
 
-// Insert 写入一张待派单。status 固定 open；不写 assignee_id，库里就是 NULL。
-// 必须用 tx.Exec，不能用 s.db.Exec，否则审计失败时这条工单已经独立提交，滚不回去。
 func (s *TicketStore) Insert(tx *sql.Tx, title, description, category string, creatorID int64) (int64, error) {
-	// ? 是占位符，按后面参数顺序填，避免手拼 SQL 被注入。
 	res, err := tx.Exec(
 		`INSERT INTO tickets (title, description, category, status, creator_id) VALUES (?, ?, ?, ?, ?)`,
 		title, description, category, model.StatusOpen, creatorID,
@@ -31,124 +35,187 @@ func (s *TicketStore) Insert(tx *sql.Tx, title, description, category string, cr
 	if err != nil {
 		return 0, err
 	}
-	// 自增主键，给审计的 ticket_id 和后面 FindByID 用。
 	return res.LastInsertId()
 }
 
-// FindByID 按主键读一行。创建提交后用它带回 created_at / updated_at。
-// 这里走连接池 s.db，不走 tx：调用方已经 Commit，事务结束了。
 func (s *TicketStore) FindByID(id int64) (*model.Ticket, error) {
-	row := s.db.QueryRow(
-		`SELECT id, title, description, category, status, creator_id, assignee_id, created_at, updated_at
-		 FROM tickets WHERE id = ?`,
-		id,
-	)
-	return scanTicket(row)
+	return scanTicket(s.db.QueryRow(ticketSelect+` WHERE t.id = ?`, id))
 }
 
-// scanTicket 把一行扫进结构体。assignee_id 可空，不能直接扫进 *int64，要先接 NullInt64。
-func scanTicket(row *sql.Row) (*model.Ticket, error) {
-	var t model.Ticket
-	var assignee sql.NullInt64
-	if err := row.Scan(
-		&t.ID, &t.Title, &t.Description, &t.Category, &t.Status,
-		&t.CreatorID, &assignee, &t.CreatedAt, &t.UpdatedAt,
-	); err != nil {
-		return nil, err
+// GetByViewer 按 id 取一张单，同时套上可见范围。看不见或没有都是 sql.ErrNoRows。
+func (s *TicketStore) GetByViewer(userID, id int64, role string) (*model.Ticket, error) {
+	clause, args := viewerClause(userID, role)
+	query := ticketSelect + ` WHERE t.id = ?`
+	allArgs := []any{id}
+	if clause != "" {
+		query += ` AND (` + clause + `)`
+		allArgs = append(allArgs, args...)
 	}
-	// Valid=false 表示 SQL NULL（未指派），AssigneeID 保持 nil，JSON 会是 null。
-	if assignee.Valid {
-		t.AssigneeID = &assignee.Int64
-	}
-	return &t, nil
+	return scanTicket(s.db.QueryRow(query, allArgs...))
 }
 
-// ListByViewer 按「当前这个人能看什么」查列表。role 是 users 表上的角色，不是 tickets 的列。
-// 不要写成 WHERE role = ?：工单行上没有角色字段。
-func (s *TicketStore) ListByViewer(userID int64, role string) ([]model.PublicTicket, error) {
-	// 三种角色共用同一条 SELECT，差别只在 WHERE。
-	query := `SELECT id, title, description, category, status, creator_id, assignee_id, created_at, updated_at FROM tickets`
-	var args []any
-	switch role {
-	case "admin":
-		// 管理员：不按人过滤，看全部。
-	case "agent":
-		// IT：自己提的，或派给自己的。
-		query += ` WHERE creator_id = ? OR assignee_id = ?`
-		args = []any{userID, userID}
-	default:
-		// 员工（以及未知角色按员工收）：只能看自己提的。
-		query += ` WHERE creator_id = ?`
-		args = []any{userID}
+func (s *TicketStore) List(f model.TicketFilter) ([]model.Ticket, error) {
+	where, args := filterSQL(f)
+	query := ticketSelect + where + ` ORDER BY t.updated_at DESC, t.id DESC`
+	if f.Limit > 0 {
+		query += ` LIMIT ? OFFSET ?`
+		args = append(args, f.Limit, f.Offset)
 	}
-	query += ` ORDER BY updated_at DESC`
-
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
-	return scanTickets(rows)
-}
-
-// scanTickets 把多行扫进切片。assignee_id 可空，和单行 scanTicket 一样先接 NullInt64。
-func scanTickets(rows *sql.Rows) ([]model.PublicTicket, error) {
 	defer rows.Close()
-	tickets := make([]model.PublicTicket, 0)
+
+	list := make([]model.Ticket, 0)
 	for rows.Next() {
-		var t model.Ticket
-		var assignee sql.NullInt64
-		if err := rows.Scan(
-			&t.ID, &t.Title, &t.Description, &t.Category, &t.Status,
-			&t.CreatorID, &assignee, &t.CreatedAt, &t.UpdatedAt,
-		); err != nil {
+		t, err := scanTicket(rows)
+		if err != nil {
 			return nil, err
 		}
-		if assignee.Valid {
-			t.AssigneeID = &assignee.Int64
-		}
-		tickets = append(tickets, t.Public())
+		list = append(list, *t)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return tickets, nil
+	return list, rows.Err()
 }
 
-// GetDetailByViewer 按 id 取一张单，同时套上和列表相同的可见范围。
-// 看不见或 id 不存在都会变成 sql.ErrNoRows，service 统一翻成 404，避免泄露「单子在不在」。
-// 第一条 WHERE 已经占住了，后面只能 AND，不能再写 WHERE。
-func (s *TicketStore) GetDetailByViewer(userID, id int64, role string) (*model.Ticket, error) {
-	query := `SELECT id, title, description, category, status, creator_id, assignee_id, created_at, updated_at
-		 FROM tickets WHERE id = ?`
-	args := []any{id}
-	switch role {
-	case "admin":
-		// 管理员：只要 id 对就能看。
-	case "agent":
-		query += ` AND (creator_id = ? OR assignee_id = ?)`
-		args = append(args, userID, userID)
-	default:
-		query += ` AND creator_id = ?`
-		args = append(args, userID)
-	}
-	return scanTicket(s.db.QueryRow(query, args...))
+func (s *TicketStore) Count(f model.TicketFilter) (int64, error) {
+	where, args := filterSQL(f)
+	var n int64
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM tickets t`+where, args...).Scan(&n)
+	return n, err
 }
 
-// UpdateAssignee 把处理人改成指定的 agent，状态写成 assigned。必须走同一条事务。
+// UpdateAssignee 指派 / 改派：写入处理人，状态写成 assigned。
 func (s *TicketStore) UpdateAssignee(tx *sql.Tx, ticketID, assigneeID int64) error {
 	_, err := tx.Exec(
-		`UPDATE tickets SET assignee_id = ?, status = ? WHERE id = ?`,
+		`UPDATE tickets SET assignee_id = ?, status = ?, closed_at = NULL WHERE id = ?`,
 		assigneeID, model.StatusAssigned, ticketID,
 	)
 	return err
 }
 
-// UpdateStatus 按状态机写下一步。clearAssignee 为 true 时清空处理人（重开）。
-func (s *TicketStore) UpdateStatus(tx *sql.Tx, ticketID int64, status string, clearAssignee bool) error {
-	if clearAssignee {
-		_, err := tx.Exec(`UPDATE tickets SET status = ?, assignee_id = NULL WHERE id = ?`, status, ticketID)
-		return err
+// ClaimOpen 只有待派且无人领取时才成功。影响 0 行表示被人抢先领了。
+func (s *TicketStore) ClaimOpen(tx *sql.Tx, ticketID, assigneeID int64) (bool, error) {
+	res, err := tx.Exec(
+		`UPDATE tickets SET assignee_id = ?, status = ? WHERE id = ? AND status = ? AND assignee_id IS NULL`,
+		assigneeID, model.StatusAssigned, ticketID, model.StatusOpen,
+	)
+	if err != nil {
+		return false, err
 	}
-	_, err := tx.Exec(`UPDATE tickets SET status = ? WHERE id = ?`, status, ticketID)
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ApplyTransition 按状态机写下一步。各标志由 service 算好，这里只拼 UPDATE。
+func (s *TicketStore) ApplyTransition(tx *sql.Tx, ticketID int64, u TicketUpdate) error {
+	sets := []string{"status = ?"}
+	args := []any{u.Status}
+	if u.ClearAssignee {
+		sets = append(sets, "assignee_id = NULL")
+	}
+	if u.SetClosedNow {
+		sets = append(sets, "closed_at = CURRENT_TIMESTAMP")
+	}
+	if u.ClearClosedAt {
+		sets = append(sets, "closed_at = NULL")
+	}
+	args = append(args, ticketID)
+	_, err := tx.Exec(`UPDATE tickets SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
 	return err
+}
+
+// TicketUpdate 一次状态变更要写哪些列。
+type TicketUpdate struct {
+	Status        string
+	ClearAssignee bool
+	SetClosedNow  bool
+	ClearClosedAt bool
+}
+
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanTicket(sc rowScanner) (*model.Ticket, error) {
+	var t model.Ticket
+	var assignee sql.NullInt64
+	var closed sql.NullTime
+	if err := sc.Scan(
+		&t.ID, &t.Title, &t.Description, &t.Category, &t.Status,
+		&t.CreatorID, &assignee, &t.CreatedAt, &t.UpdatedAt, &closed,
+		&t.CreatorName, &t.AssigneeName,
+	); err != nil {
+		return nil, err
+	}
+	if assignee.Valid {
+		t.AssigneeID = &assignee.Int64
+	}
+	if closed.Valid {
+		t.ClosedAt = &closed.Time
+	}
+	return &t, nil
+}
+
+// viewerClause V2：员工只看自己的；IT 看自己提的、派给自己的、以及待派池；管理员不限制。
+func viewerClause(userID int64, role string) (string, []any) {
+	switch role {
+	case "admin":
+		return "", nil
+	case "agent":
+		return "t.creator_id = ? OR t.assignee_id = ? OR (t.status = ? AND t.assignee_id IS NULL)",
+			[]any{userID, userID, model.StatusOpen}
+	default:
+		return "t.creator_id = ?", []any{userID}
+	}
+}
+
+func filterSQL(f model.TicketFilter) (string, []any) {
+	var parts []string
+	var args []any
+
+	switch f.Scope {
+	case model.ScopeCreated:
+		parts = append(parts, "t.creator_id = ?")
+		args = append(args, f.ViewerID)
+	case model.ScopeAssigned:
+		parts = append(parts, "t.assignee_id = ? AND t.status <> ?")
+		args = append(args, f.ViewerID, model.StatusClosed)
+	case model.ScopePool:
+		parts = append(parts, "t.status = ? AND t.assignee_id IS NULL")
+		args = append(args, model.StatusOpen)
+	default:
+		if clause, a := viewerClause(f.ViewerID, f.ViewerRole); clause != "" {
+			parts = append(parts, "("+clause+")")
+			args = append(args, a...)
+		}
+	}
+
+	if f.Status != "" {
+		parts = append(parts, "t.status = ?")
+		args = append(args, f.Status)
+	}
+	if f.Category != "" {
+		parts = append(parts, "t.category = ?")
+		args = append(args, f.Category)
+	}
+	if q := strings.TrimSpace(f.Q); q != "" {
+		parts = append(parts, "t.title LIKE ?")
+		args = append(args, "%"+escapeLike(q)+"%")
+	}
+	if f.AssigneeID != nil {
+		parts = append(parts, "t.assignee_id = ?")
+		args = append(args, *f.AssigneeID)
+	}
+	if len(parts) == 0 {
+		return "", nil
+	}
+	return " WHERE " + strings.Join(parts, " AND "), args
+}
+
+// escapeLike 去掉通配符，避免用户输入 % 把筛选变成全表。
+func escapeLike(s string) string {
+	s = strings.ReplaceAll(s, "%", "")
+	s = strings.ReplaceAll(s, "_", "")
+	return s
 }

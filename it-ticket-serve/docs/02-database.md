@@ -280,3 +280,18 @@ CREATE TABLE audit_logs (
 | `attachments` / `notifications` | P2，第一期禁止开工 |
 
 P1「把用户设为 agent」只 `UPDATE users.role`，不加表。
+
+---
+
+## 9. V2 P0 增量
+
+不加表。已有库执行 `sql/002_v2.sql`；新库用更新后的 `001_init.sql`。
+
+| 表 | 列 | 说明 |
+|---|---|---|
+| `tickets` | `closed_at DATETIME NULL` | 关闭或撤回时写入；重开清掉。用来算 7 天重开窗口 |
+| `audit_logs` | `reason VARCHAR(500) NULL` | 重开 / 管理员代关 / 撤回原因 |
+
+`audit_logs.action` 增加：`claim`（自领）、`cancel`（撤回）。
+
+`pending`、附件表、通知表留给 V2 P1，本期不要建。

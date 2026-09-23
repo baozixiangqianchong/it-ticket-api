@@ -14,7 +14,6 @@ func NewCommentStore(db *sql.DB) *CommentStore {
 	return &CommentStore{db: db}
 }
 
-// Insert 追加一条评论。作者和工单 id 由 service 传入，不从客户端信。
 func (s *CommentStore) Insert(ticketID, authorID int64, body string) (*model.Comment, error) {
 	res, err := s.db.Exec(
 		`INSERT INTO ticket_comments (ticket_id, author_id, body) VALUES (?, ?, ?)`,
@@ -32,21 +31,22 @@ func (s *CommentStore) Insert(ticketID, authorID int64, body string) (*model.Com
 
 func (s *CommentStore) FindByID(id int64) (*model.Comment, error) {
 	row := s.db.QueryRow(
-		`SELECT id, ticket_id, author_id, body, created_at FROM ticket_comments WHERE id = ?`,
+		`SELECT c.id, c.ticket_id, c.author_id, c.body, c.created_at, u.display_name
+		 FROM ticket_comments c
+		 JOIN users u ON u.id = c.author_id
+		 WHERE c.id = ?`,
 		id,
 	)
-	var c model.Comment
-	if err := row.Scan(&c.ID, &c.TicketID, &c.AuthorID, &c.Body, &c.CreatedAt); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	return scanComment(row)
 }
 
-// ListByTicketID 按时间正序拉一张单的评论，给详情页用。
 func (s *CommentStore) ListByTicketID(ticketID int64) ([]model.Comment, error) {
 	rows, err := s.db.Query(
-		`SELECT id, ticket_id, author_id, body, created_at
-		 FROM ticket_comments WHERE ticket_id = ? ORDER BY created_at ASC, id ASC`,
+		`SELECT c.id, c.ticket_id, c.author_id, c.body, c.created_at, u.display_name
+		 FROM ticket_comments c
+		 JOIN users u ON u.id = c.author_id
+		 WHERE c.ticket_id = ?
+		 ORDER BY c.created_at ASC, c.id ASC`,
 		ticketID,
 	)
 	if err != nil {
@@ -56,11 +56,19 @@ func (s *CommentStore) ListByTicketID(ticketID int64) ([]model.Comment, error) {
 
 	list := make([]model.Comment, 0)
 	for rows.Next() {
-		var c model.Comment
-		if err := rows.Scan(&c.ID, &c.TicketID, &c.AuthorID, &c.Body, &c.CreatedAt); err != nil {
+		c, err := scanComment(rows)
+		if err != nil {
 			return nil, err
 		}
-		list = append(list, c)
+		list = append(list, *c)
 	}
 	return list, rows.Err()
+}
+
+func scanComment(sc rowScanner) (*model.Comment, error) {
+	var c model.Comment
+	if err := sc.Scan(&c.ID, &c.TicketID, &c.AuthorID, &c.Body, &c.CreatedAt, &c.AuthorName); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }

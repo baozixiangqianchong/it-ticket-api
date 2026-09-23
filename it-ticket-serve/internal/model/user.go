@@ -2,6 +2,12 @@ package model
 
 import "time"
 
+// UserRef 工单 / 评论 / 审计里带出的人名。只放 id 和显示名，不含邮箱和角色。
+type UserRef struct {
+	ID          int64  `json:"id"`
+	DisplayName string `json:"display_name"`
+}
+
 type User struct {
 	ID           int64
 	Email        string
