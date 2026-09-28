@@ -16,34 +16,59 @@ import (
 
 // AuthService 注册、登录。密码哈希和签发 JWT 都在这里，不进 handler、不进 store。
 type AuthService struct {
-	users     *store.UserStore // 查/写 users 表
-	jwtSecret []byte           // 签名密钥，来自配置 JWT_SECRET
+	users     *store.UserStore
+	notifs    *store.NotificationStore
+	invites   *store.InviteStore
+	jwtSecret []byte
 }
 
-func NewAuthService(users *store.UserStore, jwtSecret string) *AuthService {
-	return &AuthService{users: users, jwtSecret: []byte(jwtSecret)}
+func NewAuthService(users *store.UserStore, notifs *store.NotificationStore, invites *store.InviteStore, jwtSecret string) *AuthService {
+	return &AuthService{users: users, notifs: notifs, invites: invites, jwtSecret: []byte(jwtSecret)}
 }
 
-// Register 创建普通员工。客户端就算传 role 也没用，这里写死 "user"。
+// Register 创建普通员工。必须带有效邀请码；客户端就算传 role 也没用，这里写死 "user"。
 func (s *AuthService) Register(in model.RegisterInput) (*model.PublicUser, error) {
 	email, displayName, err := validateRegister(in)
 	if err != nil {
 		return nil, err
 	}
-	// bcrypt 单向哈希，库里只存 hash，不能反推出明文。DefaultCost 是计算强度。
+	code := normalizeInviteInput(in.InviteCode)
+	if !model.ValidInviteCode(code) {
+		return nil, invalidArg("请填写有效邀请码")
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(in.Password), bcrypt.DefaultCost)
 	if err != nil {
 		return nil, err
 	}
-	// 角色固定 user：管理员只能 bootstrap 或以后由 admin 接口提升，不能靠注册自封。
-	u, err := s.users.Create(email, string(hash), displayName, "user")
+
+	tx, err := s.users.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	inv, err := s.invites.FindByCodeForUpdate(tx, code)
+	if err != nil {
+		return nil, err
+	}
+	if inv == nil || inv.Status(time.Now()) != model.InviteUnused {
+		return nil, invalidArg("邀请码无效、已使用或已过期")
+	}
+
+	u, err := s.users.CreateTx(tx, email, string(hash), displayName, "user")
 	if err != nil {
 		if errors.Is(err, store.ErrEmailTaken) {
 			return nil, emailTaken()
 		}
 		return nil, err
 	}
-	pub := u.Public() // 去掉 password_hash，避免返回给前端
+	if err := s.invites.ConsumeTx(tx, inv.ID, u.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	pub := u.Public()
 	return &pub, nil
 }
 
@@ -61,11 +86,18 @@ func (s *AuthService) Login(in model.LoginInput) (*model.LoginResult, error) {
 	if u == nil || bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(in.Password)) != nil {
 		return nil, unauthenticated()
 	}
+	if u.Disabled() {
+		return nil, accountDisabled()
+	}
 	token, err := s.signToken(u)
 	if err != nil {
 		return nil, err
 	}
-	return &model.LoginResult{Token: token, User: u.Public()}, nil
+	pub, err := s.publicWithUnread(u)
+	if err != nil {
+		return nil, err
+	}
+	return &model.LoginResult{Token: token, User: *pub}, nil
 }
 
 // Me 用登录签发的 JWT 换当前用户公开资料。token 无效、过期或用户已不存在都统一 401。
@@ -91,7 +123,79 @@ func (s *AuthService) Me(token string) (*model.PublicUser, error) {
 		}
 		return nil, err
 	}
+	if u.Disabled() {
+		return nil, accountDisabled()
+	}
+	pub, err := s.publicWithUnread(u)
+	if err != nil {
+		return nil, err
+	}
+	return pub, nil
+}
+
+func (s *AuthService) UpdateProfile(uid int64, in model.UpdateProfileInput) (*model.PublicUser, error) {
+	displayName, err := normalizeDisplayName(in.DisplayName)
+	if err != nil {
+		return nil, err
+	}
+	u, err := s.users.FindByID(uid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, tokenInvalid()
+		}
+		return nil, err
+	}
+	if u.Disabled() {
+		return nil, accountDisabled()
+	}
+	if u.DisplayName != displayName {
+		if err := s.users.UpdateDisplayName(uid, displayName); err != nil {
+			return nil, err
+		}
+		u.DisplayName = displayName
+	}
+	return s.publicWithUnread(u)
+}
+
+func (s *AuthService) UpdatePassword(uid int64, in model.UpdatePasswordInput) error {
+	if err := validatePasswordLength(in.NewPassword); err != nil {
+		return err
+	}
+	if in.CurrentPassword == "" {
+		return invalidArg("请填写当前密码")
+	}
+	if in.CurrentPassword == in.NewPassword {
+		return invalidArg("新密码不能与当前密码相同")
+	}
+	u, err := s.users.FindByID(uid)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return tokenInvalid()
+		}
+		return err
+	}
+	if u.Disabled() {
+		return accountDisabled()
+	}
+	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(in.CurrentPassword)) != nil {
+		return invalidArg("当前密码不正确")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(in.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	return s.users.UpdatePasswordHash(uid, string(hash))
+}
+
+func (s *AuthService) publicWithUnread(u *model.User) (*model.PublicUser, error) {
 	pub := u.Public()
+	if s.notifs != nil {
+		n, err := s.notifs.UnreadCount(u.ID)
+		if err != nil {
+			return nil, err
+		}
+		pub.UnreadCount = n
+	}
 	return &pub, nil
 }
 
@@ -161,20 +265,33 @@ func (s *AuthService) signToken(u *model.User) (string, error) {
 // validateRegister 校验并整理入参。email 转小写，避免 Alice@x.com 和 alice@x.com 当成两个账号。
 func validateRegister(in model.RegisterInput) (email, displayName string, err error) {
 	email = strings.TrimSpace(strings.ToLower(in.Email))
-	displayName = strings.TrimSpace(in.DisplayName)
 	if !validEmail(email) {
 		return "", "", invalidArg("邮箱格式不正确")
 	}
-	// bcrypt 最多处理 72 字节；文档要求最短 8。用 len 按字节，和 bcrypt 限制一致。
-	n := len(in.Password)
-	if n < 8 || n > 72 {
-		return "", "", invalidArg("密码长度需为 8～72 位")
+	if err = validatePasswordLength(in.Password); err != nil {
+		return "", "", err
 	}
-	// 显示名按「字」计数，中文「张三」是 2，不会被当成 6 个字节超限。
-	if displayName == "" || utf8.RuneCountInString(displayName) > 64 {
-		return "", "", invalidArg("显示名必填，最多 64 个字")
+	displayName, err = normalizeDisplayName(in.DisplayName)
+	if err != nil {
+		return "", "", err
 	}
 	return email, displayName, nil
+}
+
+func normalizeDisplayName(name string) (string, error) {
+	displayName := strings.TrimSpace(name)
+	if displayName == "" || utf8.RuneCountInString(displayName) > 64 {
+		return "", invalidArg("显示名必填，最多 64 个字")
+	}
+	return displayName, nil
+}
+
+func validatePasswordLength(password string) error {
+	n := len(password)
+	if n < 8 || n > 72 {
+		return invalidArg("密码长度需为 8～72 位")
+	}
+	return nil
 }
 
 // validEmail 只做第一期要求的「基本格式」：有 @，@ 前后都有内容，域名里有点。

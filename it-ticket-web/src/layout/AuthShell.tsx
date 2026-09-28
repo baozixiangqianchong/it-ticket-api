@@ -26,9 +26,9 @@ export function AuthShell({
           提单、指派、跟进、关闭，一套流程走完。
         </Paragraph>
         <ul className="auth-points">
-          <li>按角色自动过滤可见工单</li>
-          <li>用动作推进状态，不直接改字段</li>
-          <li>管理员指派 IT，并可调整角色</li>
+          <li>员工提单，IT 领取或管理员指派</li>
+          <li>等用户、转派、重开都留在同一张单上</li>
+          <li>通知、审计、角色变更都可追溯</li>
         </ul>
       </section>
       <section className="auth-panel">

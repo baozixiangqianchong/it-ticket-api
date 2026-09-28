@@ -37,7 +37,7 @@ export function LoginPage() {
   }
 
   return (
-    <AuthShell title="欢迎回来" subtitle="使用已注册邮箱进入管理端">
+    <AuthShell title="欢迎回来" subtitle="使用已开通账号进入管理端">
       <Form layout="vertical" requiredMark={false} onFinish={onFinish}>
         <Form.Item name="email" label="邮箱" rules={[{ required: true, message: '请填写邮箱' }]}>
           <Input size="large" prefix={<MailOutlined />} placeholder="name@company.com" />

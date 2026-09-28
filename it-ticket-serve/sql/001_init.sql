@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash  VARCHAR(255) NOT NULL,
   display_name   VARCHAR(64)  NOT NULL,
   role           ENUM('user','agent','admin') NOT NULL DEFAULT 'user',
+  status         ENUM('active','disabled') NOT NULL DEFAULT 'active',
   created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_users_email (email)
@@ -20,7 +21,8 @@ CREATE TABLE IF NOT EXISTS tickets (
   title        VARCHAR(120) NOT NULL,
   description  TEXT         NOT NULL,
   category     ENUM('hardware','software','network','other') NOT NULL,
-  status       ENUM('open','assigned','in_progress','resolved','closed') NOT NULL DEFAULT 'open',
+  priority     ENUM('p1','p2','p3') NOT NULL DEFAULT 'p2',
+  status       ENUM('open','assigned','in_progress','pending','resolved','closed') NOT NULL DEFAULT 'open',
   creator_id   BIGINT NOT NULL,
   assignee_id  BIGINT NULL,
   created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -56,4 +58,33 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   CONSTRAINT fk_audit_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id),
   CONSTRAINT fk_audit_actor  FOREIGN KEY (actor_id)  REFERENCES users(id),
   KEY idx_audit_ticket_created (ticket_id, created_at)
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id         BIGINT PRIMARY KEY AUTO_INCREMENT,
+  user_id    BIGINT       NOT NULL,
+  ticket_id  BIGINT       NULL,
+  type       VARCHAR(32)  NOT NULL,
+  title      VARCHAR(120) NOT NULL,
+  body       VARCHAR(500) NULL,
+  read_at    DATETIME     NULL,
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_notif_user   FOREIGN KEY (user_id)   REFERENCES users(id),
+  CONSTRAINT fk_notif_ticket FOREIGN KEY (ticket_id) REFERENCES tickets(id),
+  KEY idx_notif_user_created (user_id, created_at),
+  KEY idx_notif_user_unread  (user_id, read_at)
+);
+
+CREATE TABLE IF NOT EXISTS account_audits (
+  id          BIGINT PRIMARY KEY AUTO_INCREMENT,
+  actor_id    BIGINT      NOT NULL,
+  user_id     BIGINT      NOT NULL,
+  action      VARCHAR(32) NOT NULL,
+  from_value  VARCHAR(32) NULL,
+  to_value    VARCHAR(32) NOT NULL,
+  created_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_account_audits_actor FOREIGN KEY (actor_id) REFERENCES users(id),
+  CONSTRAINT fk_account_audits_user  FOREIGN KEY (user_id)  REFERENCES users(id),
+  KEY idx_account_audits_created (created_at, id),
+  KEY idx_account_audits_user    (user_id, created_at)
 );

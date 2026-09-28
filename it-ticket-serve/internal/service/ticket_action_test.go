@@ -85,16 +85,46 @@ func TestResolveTicketAction(t *testing.T) {
 			wantTo: model.StatusClosed,
 		},
 		{
-			name:   "已派单不能撤回",
-			ticket: model.Ticket{Status: model.StatusAssigned, CreatorID: 3, AssigneeID: &assignee},
+			name:   "处理中创建人可撤回",
+			ticket: model.Ticket{Status: model.StatusInProgress, CreatorID: 3, AssigneeID: &assignee},
+			actor:  3, role: "user", action: model.ActionCancel,
+			wantTo: model.StatusClosed,
+		},
+		{
+			name:   "等用户后不能撤回",
+			ticket: model.Ticket{Status: model.StatusPending, CreatorID: 3, AssigneeID: &assignee},
 			actor:  3, role: "user", action: model.ActionCancel,
 			wantErr: response.ErrTicketInvalidTrans,
+		},
+		{
+			name:   "等用户必须写原因",
+			ticket: model.Ticket{Status: model.StatusInProgress, CreatorID: 3, AssigneeID: &assignee},
+			actor:  8, role: "agent", action: model.ActionWait,
+			wantErr: response.ErrInvalidArgument,
 		},
 		{
 			name:   "非处理人不能开始修",
 			ticket: model.Ticket{Status: model.StatusAssigned, CreatorID: 3, AssigneeID: &assignee},
 			actor:  9, role: "agent", action: model.ActionStart,
 			wantErr: response.ErrPermissionDenied,
+		},
+		{
+			name:   "处理人标记等用户",
+			ticket: model.Ticket{Status: model.StatusInProgress, CreatorID: 3, AssigneeID: &assignee},
+			actor:  8, role: "agent", action: model.ActionWait, reason: "请补充报错截图",
+			wantTo: model.StatusPending,
+		},
+		{
+			name:   "处理人从 pending 继续修",
+			ticket: model.Ticket{Status: model.StatusPending, CreatorID: 3, AssigneeID: &assignee},
+			actor:  8, role: "agent", action: model.ActionResume,
+			wantTo: model.StatusInProgress,
+		},
+		{
+			name:   "open 不能 wait",
+			ticket: model.Ticket{Status: model.StatusOpen, CreatorID: 3},
+			actor:  8, role: "agent", action: model.ActionWait,
+			wantErr: response.ErrTicketInvalidTrans,
 		},
 	}
 
@@ -137,6 +167,68 @@ func TestAvailableActions(t *testing.T) {
 	got = availableActions(&assigned, 1, "admin", now)
 	if !contains(got, model.ActionAssign) || !contains(got, model.ActionStart) {
 		t.Fatalf("管理员在 assigned 应能 assign 和 start: %v", got)
+	}
+
+	inProgress := model.Ticket{Status: model.StatusInProgress, CreatorID: 3, AssigneeID: &assignee}
+	got = availableActions(&inProgress, 8, "agent", now)
+	if !contains(got, model.ActionWait) || !contains(got, model.ActionTransfer) {
+		t.Fatalf("处理人在 in_progress 应能 wait 和 transfer: %v", got)
+	}
+
+	got = availableActions(&inProgress, 3, "user", now)
+	if !contains(got, model.ActionCancel) {
+		t.Fatalf("提单人在处理中应能撤回: %v", got)
+	}
+
+	if statusAfterHandoff(model.StatusPending) != model.StatusPending {
+		t.Fatalf("转派 pending 应保持等用户")
+	}
+	if statusAfterHandoff(model.StatusOpen) != model.StatusInProgress {
+		t.Fatalf("领取 open 应进入处理中")
+	}
+
+	got = availableActions(&open, 3, "user", now)
+	if !contains(got, model.ActionEdit) {
+		t.Fatalf("提单人在 open 应能改单: %v", got)
+	}
+	got = availableActions(&inProgress, 3, "user", now)
+	if contains(got, model.ActionEdit) {
+		t.Fatalf("提单人在处理中不应改单: %v", got)
+	}
+}
+
+func TestPrepareTicketEdit(t *testing.T) {
+	open := model.Ticket{ID: 1, Title: "旧标题", Description: "旧描述", Category: model.CategoryNetwork, Priority: model.PriorityP2, Status: model.StatusOpen, CreatorID: 3}
+	_, _, _, _, _, err := prepareTicketEdit(&open, 3, "user", model.EditTicketInput{
+		Title: "新标题", Description: "新描述", Category: model.CategorySoftware, Priority: model.PriorityP1,
+	})
+	if err == nil {
+		t.Fatal("员工不能把单标成紧急")
+	}
+
+	title, _, _, pri, summary, err := prepareTicketEdit(&open, 3, "user", model.EditTicketInput{
+		Title: "新标题", Description: "新描述", Category: model.CategorySoftware, Priority: model.PriorityP2,
+	})
+	if err != nil || title != "新标题" || pri != model.PriorityP2 || summary == "" {
+		t.Fatalf("open 改单失败: title=%s pri=%s summary=%s err=%v", title, pri, summary, err)
+	}
+
+	inProgress := open
+	inProgress.Status = model.StatusInProgress
+	assignee := int64(8)
+	inProgress.AssigneeID = &assignee
+	_, _, _, _, _, err = prepareTicketEdit(&inProgress, 3, "user", model.EditTicketInput{
+		Title: "再改", Description: "新描述", Category: model.CategorySoftware, Priority: model.PriorityP3,
+	})
+	if err == nil {
+		t.Fatal("处理中提单人不应能改")
+	}
+
+	title, desc, _, pri, _, err := prepareTicketEdit(&inProgress, 8, "agent", model.EditTicketInput{
+		Title: "黑客标题", Description: "黑客描述", Category: model.CategoryHardware, Priority: model.PriorityP3,
+	})
+	if err != nil || title != open.Title || desc != open.Description || pri != model.PriorityP3 {
+		t.Fatalf("处理人只能改优先级: title=%s desc=%s pri=%s err=%v", title, desc, pri, err)
 	}
 }
 

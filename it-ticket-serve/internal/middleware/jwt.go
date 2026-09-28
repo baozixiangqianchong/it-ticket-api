@@ -15,7 +15,7 @@ const uidKey = "uid"
 const roleKey = "role"
 
 // LoadRole 用 token 里的 uid 查库。found=false 表示人已经不在了。
-type LoadRole func(uid int64) (role string, found bool, err error)
+type LoadRole func(uid int64) (role string, disabled bool, found bool, err error)
 
 // JWT 只验「是谁」。角色每次查库，改角色后下一请求立刻生效，不采信 token 里的 role。
 func JWT(secret string, loadRole LoadRole) gin.HandlerFunc {
@@ -58,7 +58,7 @@ func JWT(secret string, loadRole LoadRole) gin.HandlerFunc {
 			return
 		}
 
-		role, found, err := loadRole(uid)
+		role, disabled, found, err := loadRole(uid)
 		if err != nil {
 			logger.Error("加载用户角色失败", "uid", uid, "err", err)
 			response.Fail(c, http.StatusInternalServerError, response.CodeInternal, "服务器内部错误")
@@ -67,6 +67,11 @@ func JWT(secret string, loadRole LoadRole) gin.HandlerFunc {
 		}
 		if !found || (role != "user" && role != "agent" && role != "admin") {
 			unauthorized(c)
+			return
+		}
+		if disabled {
+			response.Fail(c, http.StatusUnauthorized, response.CodeUnauthenticated, "账号已停用")
+			c.Abort()
 			return
 		}
 		if tokenRole, ok := roleFromClaims(claims); ok && tokenRole != role {

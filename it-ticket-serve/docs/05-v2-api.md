@@ -133,7 +133,7 @@ V2：`data` 改成分页信封，和用户列表同一形状。
 | `status` | — | 单个状态 |
 | `category` | — | `hardware` / `software` / `network` / `other` |
 | `q` | — | 标题模糊 |
-| `scope` | `all` | `all` / `created` / `assigned` / `pool`，见产品文档第 7 节 |
+| `scope` | `all` | `all` / `created` / `assigned` / `waiting` / `pool`，见产品文档第 7 节 |
 | `assignee_id` | — | 仅 `admin` 有效；其他人传入则忽略 |
 
 `data`：
@@ -147,7 +147,7 @@ V2：`data` 改成分页信封，和用户列表同一形状。
 }
 ```
 
-`items[]` 用第 2.3 节的工单结构。列表不带评论、不带审计。
+`items[]` 用第 2.3 节的工单结构。列表带 `last_comment`（最后一条评论预览），不带完整评论列表和审计。`q` 搜标题、描述、评论和单号。
 
 前端：`listTickets()` 不能再把 `data` 当成数组。
 
@@ -278,7 +278,7 @@ P1 增加 `unread_count`。P0 不要加，避免前端空字段分支。
 
 ### 3.9 `POST /api/v1/auth/register` / `login`
 
-P0 契约不变。P1：注册可配邮箱后缀白名单；登录时账号已停用 → 401 `UNAUTHENTICATED`，文案不要写成「用户不存在」。
+P0 契约不变，但注册必须带 `invite_code`（管理员生成，24 小时、一次性）。登录时账号已停用 → 401 `UNAUTHENTICATED`，文案不要写成「用户不存在」。
 
 ---
 
@@ -307,7 +307,7 @@ P0 契约不变。P1：注册可配邮箱后缀白名单；登录时账号已停
 
 - 看不见这张单 → 404（员工看不见别人的 open 单，所以员工会 404，不要 403）
 - `status` 必须是 `open` 且 `assignee_id` 为空，否则 409 `TICKET_INVALID_TRANSITION` 或 `TICKET_ALREADY_ASSIGNED`
-- 成功：`assignee_id = 当前用户`，`status = assigned`，审计 `claim`
+- 成功：`assignee_id = 当前用户`，`status = in_progress`，审计 `claim`
 - 并发：更新条件带上 `status = open AND assignee_id IS NULL`，影响行数为 0 则 409 `TICKET_ALREADY_ASSIGNED`
 
 响应：2.3 节工单。
@@ -316,7 +316,7 @@ P0 契约不变。P1：注册可配邮箱后缀白名单；登录时账号已停
 
 ### 5.2 `GET /api/v1/tickets/stats` — 列表页数字
 
-登录：是。给「待领 / 待我处理 / 我提交的」三个盒子提供计数，避免前端为了角标把列表拉三遍。
+登录：是。给「待领 / 待我处理 / 等对方 / 我提交的」盒子提供计数，避免前端为了角标把列表拉三遍。
 
 无查询参数。按当前角色可见范围统计。
 
@@ -326,6 +326,7 @@ P0 契约不变。P1：注册可配邮箱后缀白名单；登录时账号已停
 {
   "created": 3,
   "assigned": 5,
+  "waiting": 1,
   "pool": 2,
   "all": 8
 }
@@ -334,7 +335,8 @@ P0 契约不变。P1：注册可配邮箱后缀白名单；登录时账号已停
 | 字段 | 含义 |
 |---|---|
 | `created` | `creator_id = 自己` |
-| `assigned` | `assignee_id = 自己` 且状态不是 `closed` |
+| `assigned` | `assignee_id = 自己` 且状态是 `assigned` / `in_progress` |
+| `waiting` | `assignee_id = 自己` 且状态是 `pending` / `resolved` |
 | `pool` | 当前用户能看见的 `open` 且无处理人。员工恒为 0 |
 | `all` | 角色默认全集条数，和 `scope=all` 的 `total` 一致 |
 
@@ -342,9 +344,7 @@ P0 契约不变。P1：注册可配邮箱后缀白名单；登录时账号已停
 
 ---
 
-## 6. 新增接口（P1，先定合同，P0 不要开工）
-
-下面这些写进文档是为了避免 P0 把路径占死。P0 分支不要创建这些 handler。
+## 6. 新增接口（P1，已落地；附件不做）
 
 ### 6.1 转派
 
@@ -354,7 +354,7 @@ P0 契约不变。P1：注册可配邮箱后缀白名单；登录时账号已停
 { "assignee_id": 9, "reason": "这类网络单归你" }
 ```
 
-当前处理人或 admin；目标必须是另一位 `agent`；状态 `assigned` 或 `in_progress` 或 `pending`。成功后状态 `assigned`。审计 `transfer`。
+当前处理人或 admin；目标必须是另一位 `agent`；状态 `assigned` 或 `in_progress` 或 `pending`。成功后：`pending` 保持等待，其余进入 `in_progress`。审计 `transfer`。
 
 ### 6.2 站内通知
 
@@ -364,19 +364,31 @@ P0 契约不变。P1：注册可配邮箱后缀白名单；登录时账号已停
 | POST | `/api/v1/notifications/:id/read` | 标已读 |
 | POST | `/api/v1/notifications/read-all` | 全部标已读 |
 
-触发点（服务端写，不另开接口）：指派、自领、解决、评论、重开、撤回、转派。通知对象是「需要知道的另一方」，操作人自己不给自己发。
+触发点（服务端写，不另开接口）。工单类 `title` 是 `#id 工单标题`，`body` 是「谁做了什么」；账号类 `ticket_id` 为 `null`。
+
+| type | 写给谁 | 什么时候 |
+|---|---|---|
+| `assign` | 新处理人、原处理人（改派时）、提单人 | 管理员指派 |
+| `claim` | 提单人 | IT 自领 |
+| `start` | 提单人 | 开始处理 |
+| `wait` | 提单人 | 等用户补充 |
+| `resume` | 提单人 | IT 点继续处理（提单人评论拉回只走 `comment`） |
+| `resolve` | 提单人 | 标记已解决 |
+| `close` | 提单人、处理人 | 关单 |
+| `reopen` | 提单人、留下的处理人 | 重开 |
+| `comment` | 提单人、处理人 | 新评论 |
+| `transfer` | 新处理人、原处理人、提单人 | 转派 |
+| `cancel` | 处理人 | 提单人撤回已有处理人的单 |
+| `role` | 被改角色的人 | 管理员改角色 |
+| `account` | 被启用的人 | 管理员重新启用账号 |
+
+不写：待派单撤回（没有处理人）、停用账号、提单广播给全部 IT。操作人自己不给自己发。
 
 `GET /me` 此时增加 `unread_count`。
 
 ### 6.3 附件
 
-| 方法 | 路径 | 作用 |
-|---|---|---|
-| POST | `/api/v1/tickets/:id/attachments` | `multipart` 上传。工单可见且未关闭 |
-| GET | `/api/v1/attachments/:id` | 下载。看不见所属工单则 404 |
-| DELETE | `/api/v1/attachments/:id` | 作者或 admin 可删 |
-
-详情和评论里带 `attachments[]`：`id`、`file_name`、`size`、`content_type`。不要把文件字节嵌进 JSON。
+不做。没有对象存储。路径预留，不要占用 `/attachments`。
 
 ### 6.4 停用账号
 
@@ -390,7 +402,27 @@ P0 契约不变。P1：注册可配邮箱后缀白名单；登录时账号已停
 
 ### 6.5 等用户（不新开路径）
 
-`wait` / `resume` 加进 `POST /tickets/:id/update` 的 `action`。需要先把库里的 `status` 枚举加上 `pending`。P0 的 update 不要接受这两个动作。
+`wait` / `resume` 加进 `POST /tickets/:id/update` 的 `action`。`wait` 必须写 `reason`。提单人在 `pending` 下评论会拉回处理中。
+
+### 6.6 自助资料、邀请码与模板
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/me/profile` | `{ display_name }`，1～64 字 |
+| POST | `/api/v1/me/password` | `{ current_password, new_password }`，新密码 8～72 位 |
+| GET | `/api/v1/admin/audits` | `kind=ticket\|account`、`action`、`q`、`from` / `to`、分页。工单时间线与账号变更拼在一起 |
+| GET | `/api/v1/admin/invites` | 邀请码列表 |
+| POST | `/api/v1/admin/invites` | 生成一条，24 小时后失效 |
+| GET | `/api/v1/ticket-templates` | 登录用户，只返回 `enabled=true` 的模板 |
+| GET | `/api/v1/canned-replies` | IT / 管理员，只返回启用的常用回复 |
+| GET | `/api/v1/admin/ticket-templates` | 管理员，含停用。最多 20 个 |
+| POST | `/api/v1/admin/ticket-templates` | `{ name, category, title_hint, hint, icon, sort_order, enabled, fields }`。`icon`：`printer` / `email` / `network` / `other`。`fields` 至少 1 个、最多 8 个，`key` 可空（后台生成 `field_1`） |
+| POST | `/api/v1/admin/ticket-templates/:id` | 同上，整份覆盖 |
+| POST | `/api/v1/admin/ticket-templates/:id/delete` | 删模板，已提交工单文本不变 |
+| GET | `/api/v1/admin/canned-replies` | 管理员，含停用。最多 30 条 |
+| POST | `/api/v1/admin/canned-replies` | `{ title, body, sort_order, enabled }` |
+| POST | `/api/v1/admin/canned-replies/:id` | 整份覆盖 |
+| POST | `/api/v1/admin/canned-replies/:id/delete` | 删除 |
 
 ---
 
@@ -421,7 +453,7 @@ P0 仍是这 4 张表。只加列，不加表。
 | `audit_logs` | `reason VARCHAR(500) NULL` | 重开 / 代关 / 撤回原因 |
 | `tickets.status` 等枚举 | 不动 | `pending` 留给 P1 |
 
-P1 才新建 `notifications`、`attachments`，以及 `users.status`、`tickets.priority`。
+P1 才新建 `notifications`，以及 `users.status`、`tickets.priority`。后续增量：`account_audits`（`sql/005_activity.sql`）、`invite_codes`（`sql/006_invite.sql`）、`ticket_templates` / `canned_replies`（`sql/007_catalog.sql`）。附件表不做。
 
 迁移放 `sql/002_v2.sql`，启动时仍然不要自动建表。具体列定义实现时再写进 `02-database.md` 的续节，不要在本文展开。
 
@@ -436,6 +468,6 @@ P1 才新建 `notifications`、`attachments`，以及 `users.status`、`tickets.
 | A. 读得全 | `list`（分页筛选）、`GET :id`（姓名 + 审计）、鉴权改查库、`admin/users?role=` | `GET /tickets/stats` |
 | B. 领得走 | `list` 的 `scope=pool` | `POST /tickets/:id/claim` |
 | C. 回得去 | `update` 增加 `cancel` / `reason` / 重开留人 | 无 |
-| D. P1 | `update` 增加 `wait` / `resume`；`create` 加 priority；`comments` 拉回 pending；`/me` 未读数 | transfer、notifications、attachments、user status |
+| D. P1 | `update` 增加 `wait` / `resume`；`create` 加 priority；`comments` 拉回 pending；`/me` 未读数 | transfer、notifications、user status、`GET /agents`。附件不做 |
 
 A 可以单独上线（`list` 的 `data` 形状是破坏性的，必须和前端同一天发）。B、C 改状态机，建议同一发布。

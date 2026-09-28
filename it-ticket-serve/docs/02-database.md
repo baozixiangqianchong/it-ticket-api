@@ -294,4 +294,70 @@ P1「把用户设为 agent」只 `UPDATE users.role`，不加表。
 
 `audit_logs.action` 增加：`claim`（自领）、`cancel`（撤回）。
 
-`pending`、附件表、通知表留给 V2 P1，本期不要建。
+`pending`、`users.status`、`tickets.priority`、`notifications` 见 `sql/003_p1.sql`。`notifications.ticket_id` 可空（角色 / 账号通知没有工单），已有库再执行 `sql/004_notify.sql`。附件表不做。
+
+---
+
+## 10. `account_audits` — 账号变更审计
+
+管理员改角色、停用 / 启用账号时写入。已有库执行 `sql/005_activity.sql`。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | BIGINT PK | 自增 |
+| `actor_id` | BIGINT | 操作的管理员 |
+| `user_id` | BIGINT | 被改的人 |
+| `action` | VARCHAR(32) | `role` / `status` |
+| `from_value` | VARCHAR(32) NULL | 改之前 |
+| `to_value` | VARCHAR(32) | 改之后 |
+| `created_at` | DATETIME | 写入时间 |
+
+全局审计接口把 `audit_logs` 和这张表拼在一起。
+
+---
+
+## 11. `invite_codes` — 注册邀请码
+
+公开注册关闭后，管理员生成邀请码。已有库执行 `sql/006_invite.sql`。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | BIGINT PK | 自增 |
+| `code` | VARCHAR(32) UNIQUE | 8 位，去掉易混字符 |
+| `created_by` | BIGINT | 生成的管理员 |
+| `expires_at` | DATETIME | 生成后 24 小时 |
+| `used_at` / `used_by` | DATETIME / BIGINT NULL | 注册成功时写入，一码一次 |
+
+---
+
+## 12. `ticket_templates` / `canned_replies` — 提单模板与常用回复
+
+原先写死在代码里的打印机 / 邮箱 / 网络模板和 6 条常用回复，改为入库。已有库执行 `sql/007_catalog.sql`（空表时写入上述种子数据）。
+
+### `ticket_templates`
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | BIGINT PK | 自增 |
+| `name` | VARCHAR(32) | 卡片上的名称 |
+| `category` | ENUM | 与工单分类相同 |
+| `title_hint` | VARCHAR(120) | 点选后填进标题 |
+| `hint` | VARCHAR(80) | 卡片说明 |
+| `icon` | VARCHAR(16) | `printer` / `email` / `network` / `other` |
+| `sort_order` | INT | 越小越靠前 |
+| `enabled` | TINYINT(1) | 停用后公开列表不返回 |
+| `fields` | JSON | `[{ key, label, placeholder, required }]`，1～8 个 |
+
+公开 `GET /ticket-templates` 只返回 `enabled=1`。管理员 CRUD 在 `/api/v1/admin/ticket-templates`。最多 20 行。
+
+### `canned_replies`
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | BIGINT PK | 自增 |
+| `title` | VARCHAR(80) | 下拉显示 |
+| `body` | VARCHAR(2000) | 插入评论框的正文 |
+| `sort_order` | INT | 越小越靠前 |
+| `enabled` | TINYINT(1) | 停用后 IT 评论框不出现 |
+
+公开 `GET /canned-replies` 只返回启用的。管理员 CRUD 在 `/api/v1/admin/canned-replies`。最多 30 行。删除模板或回复不影响已经写进工单的文本。

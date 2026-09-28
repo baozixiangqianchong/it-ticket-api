@@ -6,8 +6,13 @@ import { LoginPage } from './pages/LoginPage'
 import { RegisterPage } from './pages/RegisterPage'
 import { TicketCreatePage } from './pages/TicketCreatePage'
 import { TicketDetailPage } from './pages/TicketDetailPage'
+import { NotificationsPage } from './pages/NotificationsPage'
+import { BoardPage } from './pages/BoardPage'
 import { TicketListPage } from './pages/TicketListPage'
 import { UsersPage } from './pages/UsersPage'
+import { ProfilePage } from './pages/ProfilePage'
+import { AuditPage } from './pages/AuditPage'
+import { CatalogPage } from './pages/CatalogPage'
 
 function TicketDetailRoute() {
   const { id } = useParams()
@@ -24,11 +29,16 @@ export default function App() {
       <Route element={<RequireAuth />}>
         <Route element={<AppShell />}>
           <Route path="/" element={<Navigate to="/tickets" replace />} />
+          <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/tickets" element={<TicketListPage />} />
           <Route path="/tickets/new" element={<TicketCreatePage />} />
           <Route path="/tickets/:id" element={<TicketDetailRoute />} />
+          <Route path="/profile" element={<ProfilePage />} />
           <Route element={<RequireAdmin />}>
+            <Route path="/board" element={<BoardPage />} />
             <Route path="/users" element={<UsersPage />} />
+            <Route path="/catalog" element={<CatalogPage />} />
+            <Route path="/audits" element={<AuditPage />} />
           </Route>
         </Route>
       </Route>

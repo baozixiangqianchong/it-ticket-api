@@ -60,3 +60,11 @@ func ticketAlreadyAssigned(msg string) *Error {
 func lastAdmin() *Error {
 	return apiErr(http.StatusConflict, response.CodeConflict, response.ErrLastAdmin, "不能取消最后一个管理员")
 }
+
+func lastActiveAdmin() *Error {
+	return apiErr(http.StatusConflict, response.CodeConflict, response.ErrLastAdmin, "不能停用最后一个管理员")
+}
+
+func accountDisabled() *Error {
+	return apiErr(http.StatusUnauthorized, response.CodeUnauthenticated, response.ErrUnauthenticated, "账号已停用")
+}

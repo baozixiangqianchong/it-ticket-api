@@ -29,6 +29,17 @@ func (s *CommentStore) Insert(ticketID, authorID int64, body string) (*model.Com
 	return s.FindByID(id)
 }
 
+func (s *CommentStore) InsertTx(tx *sql.Tx, ticketID, authorID int64, body string) (int64, error) {
+	res, err := tx.Exec(
+		`INSERT INTO ticket_comments (ticket_id, author_id, body) VALUES (?, ?, ?)`,
+		ticketID, authorID, body,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
 func (s *CommentStore) FindByID(id int64) (*model.Comment, error) {
 	row := s.db.QueryRow(
 		`SELECT c.id, c.ticket_id, c.author_id, c.body, c.created_at, u.display_name

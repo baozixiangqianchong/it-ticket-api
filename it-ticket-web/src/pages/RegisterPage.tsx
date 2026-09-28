@@ -1,13 +1,14 @@
-import { LockOutlined, MailOutlined, UserOutlined } from '@ant-design/icons'
+import { KeyOutlined, LockOutlined, MailOutlined, UserOutlined } from '@ant-design/icons'
 import { App, Button, Form, Input } from 'antd'
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { useAuth } from '../auth/AuthContext'
 import { AuthShell } from '../layout/AuthShell'
 import { errText } from '../lib/toast'
 
 type RegisterForm = {
+  inviteCode: string
   displayName: string
   email: string
   password: string
@@ -17,12 +18,13 @@ export function RegisterPage() {
   const { register } = useAuth()
   const { message } = App.useApp()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [submitting, setSubmitting] = useState(false)
 
   async function onFinish(values: RegisterForm) {
     setSubmitting(true)
     try {
-      await register(values.email.trim(), values.password, values.displayName.trim())
+      await register(values.email.trim(), values.password, values.displayName.trim(), values.inviteCode.trim())
       navigate('/tickets', { replace: true })
     } catch (err) {
       message.error(errText(err, '注册失败'))
@@ -32,8 +34,20 @@ export function RegisterPage() {
   }
 
   return (
-    <AuthShell title="创建账号" subtitle="新账号默认是员工，管理员可在后台改角色">
-      <Form layout="vertical" requiredMark={false} onFinish={onFinish}>
+    <AuthShell title="创建账号" subtitle="需要管理员发放的邀请码，新账号默认是员工">
+      <Form
+        layout="vertical"
+        requiredMark={false}
+        initialValues={{ inviteCode: searchParams.get('code') ?? searchParams.get('invite') ?? '' }}
+        onFinish={onFinish}
+      >
+        <Form.Item
+          name="inviteCode"
+          label="邀请码"
+          rules={[{ required: true, message: '请填写邀请码' }]}
+        >
+          <Input size="large" prefix={<KeyOutlined />} placeholder="管理员提供的 8 位邀请码" />
+        </Form.Item>
         <Form.Item
           name="displayName"
           label="显示名"

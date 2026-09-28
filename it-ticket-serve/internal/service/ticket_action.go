@@ -10,6 +10,9 @@ import (
 
 // reopenWindow 关闭后还能重开的宽限期。超时只能看，不能再改。
 const reopenWindow = 7 * 24 * time.Hour
+const poolStaleAfter = 2 * 24 * time.Hour
+const resolvedStaleAfter = 7 * 24 * time.Hour
+const closeStaleReason = "超过 7 天未确认，管理员批量代关"
 
 // actionResult 状态机算完的下一步。写库由 Update 按这些标志拼 SQL。
 type actionResult struct {
@@ -78,16 +81,39 @@ func resolveTicketAction(t *model.Ticket, actorID int64, role, action, reason st
 		return actionResult{To: model.StatusAssigned, ClearClosedAt: true}, nil
 
 	case model.ActionCancel:
-		if t.Status != model.StatusOpen {
-			return actionResult{}, ticketInvalidTransition("只有待派单可以撤回")
+		switch t.Status {
+		case model.StatusOpen, model.StatusAssigned, model.StatusInProgress:
+		default:
+			return actionResult{}, ticketInvalidTransition("等用户或已解决后不能撤回，请走关闭或重开")
 		}
 		if !isCreator {
 			return actionResult{}, permissionDenied("只有提单人可以撤回工单")
 		}
 		return actionResult{To: model.StatusClosed, SetClosedAt: true}, nil
 
+	case model.ActionWait:
+		if t.Status != model.StatusInProgress {
+			return actionResult{}, ticketInvalidTransition("当前状态不能标记等用户")
+		}
+		if !isAdmin && !isAssignee {
+			return actionResult{}, permissionDenied("只有当前处理人或管理员可以标记等用户")
+		}
+		if reason == "" {
+			return actionResult{}, invalidArg("等用户必须写明需要补充什么")
+		}
+		return actionResult{To: model.StatusPending}, nil
+
+	case model.ActionResume:
+		if t.Status != model.StatusPending {
+			return actionResult{}, ticketInvalidTransition("当前状态不能继续处理")
+		}
+		if !isAdmin && !isAssignee {
+			return actionResult{}, permissionDenied("只有当前处理人或管理员可以继续处理")
+		}
+		return actionResult{To: model.StatusInProgress}, nil
+
 	default:
-		return actionResult{}, invalidArg("动作必须是 start / resolve / close / reopen / cancel")
+		return actionResult{}, invalidArg("动作必须是 start / resolve / close / reopen / cancel / wait / resume")
 	}
 }
 
@@ -105,7 +131,8 @@ func availableActions(t *model.Ticket, actorID int64, role string, now time.Time
 	isCreator := t.CreatorID == actorID
 	out := make([]string, 0, 4)
 
-	if isAdmin && (t.Status == model.StatusOpen || t.Status == model.StatusAssigned || t.Status == model.StatusInProgress) {
+	canAssign := t.Status == model.StatusOpen || t.Status == model.StatusAssigned || t.Status == model.StatusInProgress || t.Status == model.StatusPending
+	if isAdmin && canAssign {
 		out = append(out, model.ActionAssign)
 	}
 	if (role == "agent" || isAdmin) && t.Status == model.StatusOpen && t.AssigneeID == nil {
@@ -115,7 +142,13 @@ func availableActions(t *model.Ticket, actorID int64, role string, now time.Time
 		out = append(out, model.ActionStart)
 	}
 	if t.Status == model.StatusInProgress && (isAdmin || isAssignee) {
-		out = append(out, model.ActionResolve)
+		out = append(out, model.ActionResolve, model.ActionWait)
+	}
+	if t.Status == model.StatusPending && (isAdmin || isAssignee) {
+		out = append(out, model.ActionResume)
+	}
+	if (isAdmin || isAssignee) && (t.Status == model.StatusAssigned || t.Status == model.StatusInProgress || t.Status == model.StatusPending) {
+		out = append(out, model.ActionTransfer)
 	}
 	if t.Status == model.StatusResolved && (isAdmin || isCreator) {
 		out = append(out, model.ActionClose, model.ActionReopen)
@@ -123,10 +156,36 @@ func availableActions(t *model.Ticket, actorID int64, role string, now time.Time
 	if t.Status == model.StatusClosed && (isAdmin || isCreator) && withinReopenWindow(t.ClosedAt, now) {
 		out = append(out, model.ActionReopen)
 	}
-	if t.Status == model.StatusOpen && isCreator {
+	if isCreator && (t.Status == model.StatusOpen || t.Status == model.StatusAssigned || t.Status == model.StatusInProgress) {
 		out = append(out, model.ActionCancel)
 	}
+	if t.Status != model.StatusClosed {
+		if t.Status == model.StatusOpen && (isCreator || isAdmin) {
+			out = append(out, model.ActionEdit)
+		} else if isAdmin || isAssignee {
+			out = append(out, model.ActionEdit)
+		}
+	}
 	return out
+}
+
+func ticketStale(t *model.Ticket, now time.Time) bool {
+	switch t.Status {
+	case model.StatusOpen:
+		return t.AssigneeID == nil && now.Sub(t.CreatedAt) > poolStaleAfter
+	case model.StatusResolved:
+		return now.Sub(t.UpdatedAt) > resolvedStaleAfter
+	default:
+		return false
+	}
+}
+
+// statusAfterHandoff 领/派/转之后：等用户的单保持等待，其余直接进入处理中。
+func statusAfterHandoff(from string) string {
+	if from == model.StatusPending {
+		return model.StatusPending
+	}
+	return model.StatusInProgress
 }
 
 func reasonPtr(s string) *string {
@@ -139,7 +198,7 @@ func reasonPtr(s string) *string {
 
 func validTicketStatus(s string) bool {
 	switch s {
-	case model.StatusOpen, model.StatusAssigned, model.StatusInProgress, model.StatusResolved, model.StatusClosed:
+	case model.StatusOpen, model.StatusAssigned, model.StatusInProgress, model.StatusPending, model.StatusResolved, model.StatusClosed:
 		return true
 	default:
 		return false

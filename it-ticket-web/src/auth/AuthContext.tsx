@@ -15,7 +15,7 @@ type AuthContextValue = {
   user: PublicUser | null
   loading: boolean
   login: (email: string, password: string) => Promise<void>
-  register: (email: string, password: string, displayName: string) => Promise<void>
+  register: (email: string, password: string, displayName: string, inviteCode: string) => Promise<void>
   refreshMe: () => Promise<void>
   logout: () => void
 }
@@ -60,8 +60,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const register = useCallback(
-    async (email: string, password: string, displayName: string) => {
-      await api.register(email, password, displayName)
+    async (email: string, password: string, displayName: string, inviteCode: string) => {
+      await api.register(email, password, displayName, inviteCode)
       await login(email, password)
     },
     [login],
@@ -71,6 +71,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const next = await api.me()
     setUser(next)
   }, [])
+
+  useEffect(() => {
+    if (!user) return
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return
+      void refreshMe().catch(() => undefined)
+    }
+    const id = window.setInterval(tick, 45000)
+    document.addEventListener('visibilitychange', tick)
+    return () => {
+      window.clearInterval(id)
+      document.removeEventListener('visibilitychange', tick)
+    }
+  }, [user, refreshMe])
 
   const value = useMemo(
     () => ({ user, loading, login, register, refreshMe, logout }),
